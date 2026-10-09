@@ -1,0 +1,33 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.netoop.g9overlay'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "com.netoop.g9overlay"
+        minSdk 29
+        // targetSdk 29 de propósito: app sideload com root; evita as exigências novas
+        // (tipo de foreground service, permissão de notificação) de targets mais altos.
+        targetSdk 29
+        versionCode 1
+        versionName "1.0"
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+
+    lint {
+        abortOnError false
+    }
+}
