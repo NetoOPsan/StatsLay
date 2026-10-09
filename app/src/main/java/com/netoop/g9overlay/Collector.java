@@ -2,6 +2,7 @@ package com.netoop.g9overlay;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -53,75 +54,116 @@ public class Collector {
 
     // ------------------------------------------------------------------ comando
 
+    public static final String VERSION = "1.1";
+
+    /** Acrescenta a leitura de um arquivo (função g9r do shell), a menos que ele esteja na lista de travados. */
+    private void rd(StringBuilder c, String path) {
+        if (!bad.contains(path)) c.append("g9r ").append(path).append(';');
+    }
+
     public String buildCommand(Set<String> enabled, int ownPid) {
         en = enabled;
         tick++;
         StringBuilder c = new StringBuilder();
 
-        if (has("cpu")) c.append("r /proc/stat;");
+        if (has("cpu")) rd(c, "/proc/stat");
         if (has("cpufreq")) {
-            for (int i = 0; i < 8; i++) c.append("r ").append(CPU).append(i).append("/cpufreq/scaling_cur_freq;");
+            for (int i = 0; i < 8; i++) rd(c, CPU + i + "/cpufreq/scaling_cur_freq");
         }
         if (has("limit")) {
             int[] cl = {0, 4};
             for (int i : cl) {
-                c.append("r ").append(CPU).append(i).append("/cpufreq/scaling_max_freq;");
-                c.append("r ").append(CPU).append(i).append("/cpufreq/cpuinfo_max_freq;");
+                rd(c, CPU + i + "/cpufreq/scaling_max_freq");
+                rd(c, CPU + i + "/cpufreq/cpuinfo_max_freq");
             }
-            c.append("r ").append(GPU).append("thermal_pwrlevel;");
+            rd(c, GPU + "thermal_pwrlevel");
         }
-        if (has("ram") || has("zram") || has("swap")) c.append("r /proc/meminfo;");
-        if (has("zram") || has("swap")) c.append("r /proc/swaps;");
-        if (has("zram")) c.append("r /sys/block/zram0/mm_stat;");
-        if (has("swapio")) c.append("r /proc/vmstat;");
-        if (has("psi")) c.append("r /proc/pressure/memory;");
+        if (has("ram") || has("zram") || has("swap")) rd(c, "/proc/meminfo");
+        if (has("zram") || has("swap")) rd(c, "/proc/swaps");
+        if (has("zram")) rd(c, "/sys/block/zram0/mm_stat");
+        if (has("swapio")) rd(c, "/proc/vmstat");
+        if (has("psi")) rd(c, "/proc/pressure/memory");
         if (has("gpu")) {
-            c.append("r ").append(GPU).append("devfreq/cur_freq;");
-            c.append("r ").append(GPU).append("gpu_busy_percentage;");
-            c.append("r ").append(GPU).append("gpubusy;");
+            rd(c, GPU + "devfreq/cur_freq");
+            rd(c, GPU + "gpu_busy_percentage");
+            rd(c, GPU + "gpubusy");
         }
-        if (has("temp")) {
+        if (has("temp") && !bad.contains("ZONES")) {
             // Descobre quais "zonas térmicas" existem (1ª vez e a cada ~60 ciclos).
             if (zoneTypes.isEmpty() || tick % 60 == 1) {
                 c.append("for z in /sys/class/thermal/thermal_zone*; do read t < \"$z/type\"; "
                         + "echo \"##Z ${z##*thermal_zone} $t\"; done;");
             }
-            for (int z : tempZones) c.append("r /sys/class/thermal/thermal_zone").append(z).append("/temp;");
+            for (int z : tempZones) rd(c, "/sys/class/thermal/thermal_zone" + z + "/temp");
         }
-        if (has("bat") || has("temp")) {
-            c.append("r ").append(BAT).append("temp;");
-        }
+        if (has("bat") || has("temp")) rd(c, BAT + "temp");
         if (has("bat")) {
-            c.append("r ").append(BAT).append("capacity;");
-            c.append("r ").append(BAT).append("current_now;");
-            c.append("r ").append(BAT).append("status;");
+            rd(c, BAT + "capacity");
+            rd(c, BAT + "current_now");
+            rd(c, BAT + "status");
         }
 
         // Qual é o app em primeiro plano? (processo com oom_score_adj = 0)
-        boolean needTarget = has("app") || has("fps");
-        if (needTarget && (targetPid <= 0 || tick % 5 == 0)) {
-            c.append("echo '##SCAN'; for f in $(grep -l '^0$' /proc/[0-9]*/oom_score_adj 2>/dev/null); do "
+        boolean needTarget = (has("app") || has("fps")) && !bad.contains("SCAN");
+        // 1ª vez, e depois a cada 5 ciclos (a cada 3 se ainda não achou nenhum app)
+        if (needTarget && (tick == 1 || (targetPid <= 0 ? tick % 3 == 0 : tick % 5 == 0))) {
+            c.append("echo '##SCAN'; for f in $(g9t 3 grep -l '^0$' /proc/[0-9]*/oom_score_adj); do "
                     + "p=${f#/proc/}; p=${p%%/*}; "
-                    + "n=$(tr '\\000' ' ' < /proc/$p/cmdline 2>/dev/null); "
-                    + "m=$(grep VmRSS /proc/$p/status 2>/dev/null); "
+                    + "n=$(tr '\\000' ' ' < /proc/$p/cmdline); "
+                    + "m=$(grep VmRSS /proc/$p/status); "
                     + "echo \"P $p ${n%% *} $m\"; done;");
         }
-        if (has("app") && targetPid > 0) c.append("r /proc/").append(targetPid).append("/status;");
+        if (has("app") && targetPid > 0) rd(c, "/proc/" + targetPid + "/status");
 
-        if (has("fps") && targetPid > 0) {
+        if (has("fps") && targetPid > 0 && !bad.contains("LAYERS") && !bad.contains("LAT")) {
             if (fpsLayer.isEmpty() || tick % 10 == 0) {
-                c.append("echo '##LAYERS'; dumpsys SurfaceFlinger --list 2>/dev/null;");
+                c.append("echo '##LAYERS'; g9t 4 dumpsys SurfaceFlinger --list;");
             }
             if (!fpsLayer.isEmpty()) {
-                c.append("echo '##LAT'; dumpsys SurfaceFlinger --latency '").append(fpsLayer).append("' 2>/dev/null;");
+                c.append("echo '##LAT'; g9t 4 dumpsys SurfaceFlinger --latency '").append(fpsLayer).append("';");
             }
         }
 
         // "Prioridade absoluta": o Android reescreve esse valor de tempos em tempos,
         // por isso gravamos de novo a cada ciclo. -1000 = nunca morto por falta de memória.
-        if (ownPid > 0) c.append("echo -1000 > /proc/").append(ownPid).append("/oom_score_adj 2>/dev/null;");
+        if (ownPid > 0) c.append("echo -1000 > /proc/").append(ownPid).append("/oom_score_adj;");
 
         return c.toString();
+    }
+
+    // ---- proteção contra arquivos que travam a leitura
+
+    private final Set<String> bad = new HashSet<String>();
+    private final Map<String, Integer> hangCount = new HashMap<String, Integer>();
+
+    /** Extrai o "ultimo=..." da mensagem de erro do RootShell. */
+    public static String lastHeaderFrom(String msg) {
+        if (msg == null) return "";
+        int i = msg.indexOf("ultimo=");
+        if (i < 0) return "";
+        String s = msg.substring(i + 7);
+        int j = s.indexOf(" | ");
+        return (j < 0 ? s : s.substring(0, j)).trim();
+    }
+
+    /**
+     * Chamado quando um ciclo travou. Se o MESMO arquivo travar 2 ciclos seguidos, ele deixa de ser lido
+     * (e a métrica correspondente fica n/d) em vez de derrubar o overlay inteiro. Devolve o nome ou null.
+     */
+    public String noteHang(String header) {
+        if (header == null || header.length() == 0) return null;
+        String key = header.startsWith("Z ") ? "ZONES" : header;
+        int n = hangCount.containsKey(key) ? hangCount.get(key) + 1 : 1;
+        hangCount.put(key, n);
+        if (n >= 2) {
+            bad.add(key);
+            return key;
+        }
+        return null;
+    }
+
+    public void resetHangs() {
+        hangCount.clear();
     }
 
     // ------------------------------------------------------------------ leitura

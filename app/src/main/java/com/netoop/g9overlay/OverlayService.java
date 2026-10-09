@@ -285,7 +285,7 @@ public class OverlayService extends Service {
         worker.setDaemon(true);
         worker.start();
 
-        // vigia: se um ciclo travar por mais de 8 s (ex.: dumpsys preso), derruba o su e reabre
+        // vigia: se um ciclo travar por mais de 15 s (ex.: dumpsys preso), derruba o su e reabre
         Thread dog = new Thread(new Runnable() {
             @Override
             public void run() {
@@ -296,7 +296,7 @@ public class OverlayService extends Service {
                         return;
                     }
                     long t = tickStart;
-                    if (t != 0 && SystemClock.elapsedRealtime() - t > 8000) shell.close();
+                    if (t != 0 && SystemClock.elapsedRealtime() - t > 15000) shell.close();
                 }
             }
         }, "g9ov-dog");
@@ -311,25 +311,37 @@ public class OverlayService extends Service {
         while (running) {
             long t0 = SystemClock.elapsedRealtime();
             List<Collector.Line> lines;
+            String out = null;
             try {
                 if (!shell.isOpen() && !shell.open()) {
                     lines = errorLines("Sem root (su). Autorize o app no KernelSU.");
                 } else {
                     tickStart = t0;
                     String cmd = col.buildCommand(prefs.enabledSet(), android.os.Process.myPid());
-                    String out = shell.run(cmd);
+                    out = shell.run(cmd);
                     tickStart = 0;
+                    col.resetHangs();
+                    lines = null;
+                }
+            } catch (Exception e) {
+                tickStart = 0;
+                shell.close();
+                String msg = String.valueOf(e.getMessage());
+                String ignored = col.noteHang(Collector.lastHeaderFrom(msg));
+                lines = errorLines("Erro: " + msg + (ignored != null ? " | (passei a ignorar: " + ignored + ")" : ""));
+            }
+            if (lines == null) {
+                // leitura ok: agora interpreta (um erro aqui NÃO derruba o su)
+                try {
                     long cpuMs = android.os.Process.getElapsedCpuTime();
                     long wall = SystemClock.elapsedRealtime();
                     double selfPct = wall > prevWall ? 100.0 * (cpuMs - prevCpuMs) / (wall - prevWall) : 0;
                     prevCpuMs = cpuMs;
                     prevWall = wall;
                     lines = col.parse(out, System.currentTimeMillis(), readSelfRssKb(), selfPct);
+                } catch (Exception e) {
+                    lines = errorLines("Erro ao interpretar: " + e);
                 }
-            } catch (Exception e) {
-                tickStart = 0;
-                shell.close();
-                lines = errorLines("Erro: " + e.getMessage());
             }
             final List<Collector.Line> toShow = lines;
             ui.post(new Runnable() {
@@ -350,7 +362,8 @@ public class OverlayService extends Service {
 
     private List<Collector.Line> errorLines(String msg) {
         List<Collector.Line> l = new ArrayList<Collector.Line>();
-        l.add(new Collector.Line(msg, 2));
+        l.add(new Collector.Line("G9 Overlay v" + Collector.VERSION, 3));
+        for (String part : msg.split(" \\| ")) l.add(new Collector.Line(part, 2));
         return l;
     }
 
