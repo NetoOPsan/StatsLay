@@ -69,7 +69,7 @@ public class SlowProbe {
         if (!wantApp && !wantFps) return "";
         StringBuilder c = new StringBuilder();
 
-        if (!blocked("SCAN", now) && (targetPid <= 0 || now - lastScanMs >= 5000)) {
+        if (!blocked("SCAN", now) && now - lastScanMs >= (targetPid <= 0 ? 3000 : 5000)) {
             lastScanMs = now;
             if (uidMap.isEmpty() || now - lastPkgMs >= 60000) {
                 lastPkgMs = now;
@@ -81,6 +81,12 @@ public class SlowProbe {
                     + "u=$(g9t 2 grep '^Uid:' /proc/$p/status); "
                     + "m=$(g9t 2 grep VmRSS /proc/$p/status); "
                     + "echo \"P $p $u $m\"; done;");
+            // Plano B (só enquanto não há alvo): pacote da janela com foco + pid dele.
+            // Ex.: mCurrentFocus=Window{1a2b u0 dev.eden.eden_emulator/...Activity}
+            if (targetPid <= 0) {
+                c.append("fp=$(g9t 4 dumpsys window | grep mCurrentFocus | sed -n 's#.* u[0-9]* \\([^/ }]*\\).*#\\1#p'); "
+                        + "echo '##FOCUS'; if [ -n \"$fp\" ]; then set -- $(pidof \"$fp\"); echo \"FP $fp $1\"; fi;");
+            }
         }
 
         if (wantFps && targetPid > 0 && !blocked("FPS", now)) {
@@ -141,6 +147,7 @@ public class SlowProbe {
         }
 
         if (sec.containsKey("SCAN")) pickTarget(pLines);
+        if (targetPid <= 0 && sec.containsKey("FOCUS")) useFocus(sec.get("FOCUS"));
 
         if (sec.containsKey("LAYERS")) chooseLayer(sec.get("LAYERS"));
         if (sec.containsKey("LAT")) computeFps(sec.get("LAT"));
@@ -172,6 +179,7 @@ public class SlowProbe {
         }
         if (!bestName.equals(targetName) || bestPid != targetPid) {
             note("alvo: " + (bestName.isEmpty() ? "(nenhum)" : bestName + " pid=" + bestPid)
+                    + " | " + cand + " proc(s) com adj 0, uidMap=" + uidMap.size() + " entradas"
                     + " | candidatos(pid/uid/pacote): " + desc.toString().trim());
         }
         if (bestPid > 0) {
@@ -186,6 +194,25 @@ public class SlowProbe {
             targetPid = 0;
             targetName = "";
             fps = -1;
+        }
+    }
+
+    /** Plano B: usa o pacote da janela com foco (dumpsys window) quando a varredura não achou nenhum app. */
+    private void useFocus(List<String> focus) {
+        for (String l : focus) {
+            String[] t = l.trim().split("\\s+");
+            if (t.length < 3 || !t[0].equals("FP")) continue;
+            long pid = num(t[2]);
+            if (pid <= 0 || t[1].equals(selfPkg)) continue;
+            if (!t[1].equals(targetName)) {
+                fpsLayer = "";
+                prevFrameT = -1;
+                fps = -1;
+            }
+            targetPid = (int) pid;
+            targetName = t[1];
+            note("alvo (foco da janela): " + t[1] + " pid=" + pid);
+            return;
         }
     }
 

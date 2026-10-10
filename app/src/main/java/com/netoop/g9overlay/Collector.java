@@ -37,6 +37,7 @@ public class Collector {
     // estado guardado entre ciclos (para calcular variações)
     private final Map<String, long[]> prevCpu = new HashMap<String, long[]>();
     private long prevSwpIn = -1, prevSwpOut = -1, prevVmMs = 0;
+    private long prevZIn = -1, prevZOut = -1; // setores lidos/escritos no zram0
     private final Map<Integer, String> zoneTypes = new TreeMap<Integer, String>();
     private final List<Integer> tempZones = new ArrayList<Integer>();
 
@@ -67,7 +68,7 @@ public class Collector {
 
     // ------------------------------------------------------------------ comando
 
-    public static final String VERSION = "1.2";
+    public static final String VERSION = "1.3";
 
     /** Acrescenta a leitura de um arquivo (função g9r do shell), a menos que ele esteja na lista de travados. */
     private void rd(StringBuilder c, String path) {
@@ -94,7 +95,10 @@ public class Collector {
         if (has("ram") || has("zram") || has("swap")) rd(c, "/proc/meminfo");
         if (has("zram") || has("swap")) rd(c, "/proc/swaps");
         if (has("zram")) rd(c, "/sys/block/zram0/mm_stat");
-        if (has("swapio")) rd(c, "/proc/vmstat");
+        if (has("swapio")) {
+            rd(c, "/proc/vmstat");
+            rd(c, "/sys/block/zram0/stat"); // E/S só do ZRAM (setores de 512 B); disco = total - ZRAM
+        }
         if (has("psi")) rd(c, "/proc/pressure/memory");
         if (has("gpu")) {
             rd(c, GPU + "devfreq/cur_freq");
@@ -269,7 +273,7 @@ public class Collector {
             }
         }
 
-        // ---- Swap I/O (páginas de 4 KB trocadas por segundo)
+        // ---- Swap I/O: total (vmstat, páginas de 4 KB) separado em ZRAM (stat do zram0) e disco (resto)
         if (has("swapio")) {
             List<String> vm = sec.get("/proc/vmstat");
             long in = -1, outp = -1;
@@ -279,13 +283,34 @@ public class Collector {
                     else if (l.startsWith("pswpout ")) outp = toLong(l.substring(8));
                 }
             }
+            long zin = -1, zout = -1;
+            List<String> zs = sec.get("/sys/block/zram0/stat");
+            if (zs != null && !zs.isEmpty()) {
+                String[] t = zs.get(0).trim().split("\\s+");
+                if (t.length >= 7) {
+                    zin = toLong(t[2]);   // setores lidos  (swap-in vindo do ZRAM)
+                    zout = toLong(t[6]);  // setores escritos (swap-out para o ZRAM)
+                }
+            }
             if (in >= 0 && prevSwpIn >= 0 && nowMs > prevVmMs) {
                 double dt = (nowMs - prevVmMs) / 1000.0;
-                double rin = (in - prevSwpIn) * 4.0 / 1024.0 / dt;
-                double rout = (outp - prevSwpOut) * 4.0 / 1024.0 / dt;
-                double worst = Math.max(rin, rout);
-                res.add(new Line(String.format(Locale.US, "SWPIO  in %.1f  out %.1f MB/s", rin, rout),
-                        worst > 30 ? 2 : (worst > 5 ? 1 : 0)));
+                double tin = (in - prevSwpIn) * 4.0 / 1024.0 / dt;      // MB/s total
+                double tout = (outp - prevSwpOut) * 4.0 / 1024.0 / dt;
+                if (zin >= 0 && prevZIn >= 0) {
+                    double zi = (zin - prevZIn) * 512.0 / 1048576.0 / dt;
+                    double zo = (zout - prevZOut) * 512.0 / 1048576.0 / dt;
+                    double di = Math.max(0, tin - zi);                   // o que não foi para o ZRAM foi para o disco
+                    double dout = Math.max(0, tout - zo);
+                    double worst = Math.max(di, dout);
+                    res.add(new Line(String.format(Locale.US, "SWPIO  ZRAM  in %.1f  out %.1f", zi, zo), 0));
+                    res.add(new Line(String.format(Locale.US, "DISCO  in %.1f  out %.1f MB/s", di, dout),
+                            worst > 30 ? 2 : (worst > 5 ? 1 : (worst < 0.05 ? 3 : 0))));
+                } else {
+                    noteOnce("zstat", "SWPIO: sem /sys/block/zram0/stat; mostrando só o total");
+                    double worst = Math.max(tin, tout);
+                    res.add(new Line(String.format(Locale.US, "SWPIO  in %.1f  out %.1f MB/s", tin, tout),
+                            worst > 30 ? 2 : (worst > 5 ? 1 : 0)));
+                }
             } else {
                 res.add(new Line("SWPIO  --", 3));
             }
@@ -294,6 +319,8 @@ public class Collector {
                 prevSwpOut = outp;
                 prevVmMs = nowMs;
             }
+            prevZIn = zin;
+            prevZOut = zout;
         }
 
         // ---- PSI (pressão de memória: % do tempo parado esperando memória)

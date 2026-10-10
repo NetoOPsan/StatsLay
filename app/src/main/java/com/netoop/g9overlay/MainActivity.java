@@ -1,6 +1,7 @@
 package com.netoop.g9overlay;
 
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.content.Intent;
 import android.net.Uri;
 import android.os.Bundle;
@@ -31,6 +32,14 @@ public class MainActivity extends Activity {
     private volatile Boolean rootOk = null; // null = ainda não testado
     private Button[] intervalBtns;
     private Button[] themeBtns;
+    private static final String ZMOD = "/data/adb/modules/zram-4gb-lz4";
+    private static final int[] ZRAM_SIZES = {4096, 5120, 6144, 8192};
+    private static final String[] ZRAM_LABELS = {"4 GB", "5 GB", "6 GB", "8 GB"};
+    private static final int[] SWAPPINESS_OPTS = {60, 80, 100};
+    private TextView zramStatus;
+    private Button[] zramBtns;
+    private Button[] swpBtns;
+    private int cfgMb = -1, cfgSw = -1; // valores do config.txt do módulo (-1 = desconhecido)
     private static final int[] INTERVALS = {500, 1000, 2000, 3000};
     private static final String[] INTERVAL_LABELS = {"0,5 s", "1 s", "2 s", "3 s"};
 
@@ -159,6 +168,53 @@ public class MainActivity extends Activity {
         }));
         col.addView(beh);
 
+        // ---- ZRAM (edita o config.txt do módulo; vale no próximo boot)
+        LinearLayout zr = Ui.card(this);
+        zr.addView(Ui.cardTitle(this, "ZRAM (módulo)"));
+        zramStatus = Ui.text(this, "Lendo configuração...", 13, Ui.SUB, false);
+        zramStatus.setPadding(0, 0, 0, Ui.dp(this, 8));
+        zr.addView(zramStatus);
+        zr.addView(Ui.text(this, "Tamanho", 14, Ui.TEXT, false));
+        LinearLayout zrow = new LinearLayout(this);
+        zrow.setOrientation(LinearLayout.HORIZONTAL);
+        zramBtns = new Button[ZRAM_SIZES.length];
+        for (int i = 0; i < ZRAM_SIZES.length; i++) {
+            final int mb = ZRAM_SIZES[i];
+            zramBtns[i] = chipButton(ZRAM_LABELS[i], new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    setZramCfg("ZRAM_MB", mb);
+                }
+            });
+            zrow.addView(zramBtns[i]);
+        }
+        zr.addView(zrow);
+        zr.addView(Ui.text(this, "Swappiness (quanto o kernel prefere usar o swap)", 14, Ui.TEXT, false));
+        LinearLayout srow = new LinearLayout(this);
+        srow.setOrientation(LinearLayout.HORIZONTAL);
+        swpBtns = new Button[SWAPPINESS_OPTS.length];
+        for (int i = 0; i < SWAPPINESS_OPTS.length; i++) {
+            final int sw = SWAPPINESS_OPTS[i];
+            swpBtns[i] = chipButton(String.valueOf(sw), new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    setZramCfg("SWAPPINESS", sw);
+                }
+            });
+            srow.addView(swpBtns[i]);
+        }
+        zr.addView(srow);
+        TextView zn = Ui.text(this, "A mudança vale no PRÓXIMO BOOT: refazer o ZRAM com o jogo aberto não cabe na RAM.", 12, Ui.SUB, false);
+        zn.setPadding(0, Ui.dp(this, 6), 0, Ui.dp(this, 4));
+        zr.addView(zn);
+        zr.addView(Ui.button(this, "Reiniciar agora", false, new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                confirmReboot();
+            }
+        }));
+        col.addView(zr);
+
         // ---- diagnóstico
         LinearLayout diag = Ui.card(this);
         diag.addView(Ui.cardTitle(this, "Diagnóstico"));
@@ -182,6 +238,7 @@ public class MainActivity extends Activity {
     protected void onResume() {
         super.onResume();
         refreshStatus();
+        loadZramCfg();
     }
 
     // ------------------------------------------------------------ peças de interface
@@ -359,6 +416,107 @@ public class MainActivity extends Activity {
                 });
             }
         }).start();
+    }
+
+    // ------------------------------------------------------------ ZRAM (config.txt do módulo)
+
+    /** Lê o config.txt do módulo de ZRAM e o estado ATUAL do kernel (via root). */
+    private void loadZramCfg() {
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                String out = su("if [ -d " + ZMOD + " ]; then echo MOD=1; "
+                        + "[ -f " + ZMOD + "/config.txt ] && echo HAVECFG=1 && cat " + ZMOD + "/config.txt; "
+                        + "echo ACTIVE=$(cat /sys/block/zram0/disksize 2>/dev/null); "
+                        + "echo ACTSW=$(cat /proc/sys/vm/swappiness 2>/dev/null); else echo MOD=0; fi");
+                boolean mod = false, haveCfg = false;
+                int mb = -1, sw = -1, actMb = -1, actSw = -1;
+                for (String l : out.split("\n")) {
+                    l = l.trim();
+                    if (l.equals("MOD=1")) mod = true;
+                    else if (l.equals("HAVECFG=1")) haveCfg = true;
+                    else if (l.startsWith("ZRAM_MB=")) mb = toInt(l.substring(8));
+                    else if (l.startsWith("SWAPPINESS=")) sw = toInt(l.substring(11));
+                    else if (l.startsWith("ACTIVE=")) {
+                        try {
+                            actMb = (int) (Long.parseLong(l.substring(7).trim()) / 1048576L);
+                        } catch (Exception ignored) {
+                        }
+                    } else if (l.startsWith("ACTSW=")) actSw = toInt(l.substring(6));
+                }
+                final boolean fMod = mod, fHave = haveCfg;
+                final int fMb = mb, fSw = sw, fActMb = actMb, fActSw = actSw;
+                runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        cfgMb = fMb;
+                        cfgSw = fSw;
+                        String t;
+                        if (!fMod) t = "Módulo de ZRAM não encontrado (zram-4gb-lz4). Instale o zip do módulo.";
+                        else if (!fHave) t = "Módulo de ZRAM antigo (sem config.txt). Instale o zram-4gb-lz4-ksu-v1.3.zip.";
+                        else {
+                            t = "Ativo agora: " + (fActMb > 0 ? fActMb + " MB" : "?") + " · swappiness " + (fActSw > 0 ? fActSw : "?")
+                                    + "\nConfigurado: " + (fMb > 0 ? fMb + " MB" : "padrão") + " · swappiness " + (fSw > 0 ? fSw : "padrão");
+                            if ((fMb > 0 && fActMb > 0 && fMb != fActMb) || (fSw > 0 && fActSw > 0 && fSw != fActSw)) {
+                                t += "\n→ reinicie para aplicar";
+                            }
+                        }
+                        zramStatus.setText(t);
+                        for (int i = 0; i < zramBtns.length; i++) markSelected(zramBtns[i], ZRAM_SIZES[i] == cfgMb);
+                        for (int i = 0; i < swpBtns.length; i++) markSelected(swpBtns[i], SWAPPINESS_OPTS[i] == cfgSw);
+                    }
+                });
+            }
+        }).start();
+    }
+
+    private static int toInt(String s) {
+        try {
+            return Integer.parseInt(s.trim());
+        } catch (Exception e) {
+            return -1;
+        }
+    }
+
+    /** Grava CHAVE=valor no config.txt do módulo (cria a linha se não existir). */
+    private void setZramCfg(final String key, final int value) {
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                String r = su("f=" + ZMOD + "/config.txt; [ -d " + ZMOD + " ] || { echo NOMOD; exit 0; }; "
+                        + "if grep -q '^" + key + "=' \"$f\" 2>/dev/null; then sed -i 's/^" + key + "=.*/" + key + "=" + value + "/' \"$f\"; "
+                        + "else echo '" + key + "=" + value + "' >> \"$f\"; fi; echo OK");
+                AppLog.log("ui", "config ZRAM " + key + "=" + value + " -> " + r.replace('\n', ' '));
+                final boolean ok = r.contains("OK");
+                runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        Toast.makeText(MainActivity.this, ok ? "Salvo. Vale no próximo boot." : "Falhou: módulo de ZRAM não encontrado", Toast.LENGTH_LONG).show();
+                        loadZramCfg();
+                    }
+                });
+            }
+        }).start();
+    }
+
+    private void confirmReboot() {
+        new AlertDialog.Builder(this)
+                .setTitle("Reiniciar agora?")
+                .setMessage("O celular vai reiniciar para aplicar o ZRAM novo. Salve o que estiver aberto.")
+                .setPositiveButton("Reiniciar", new android.content.DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(android.content.DialogInterface d, int w) {
+                        AppLog.log("ui", "reiniciando o aparelho (pedido do usuário)");
+                        new Thread(new Runnable() {
+                            @Override
+                            public void run() {
+                                su("sync; reboot");
+                            }
+                        }).start();
+                    }
+                })
+                .setNegativeButton("Cancelar", null)
+                .show();
     }
 
     private void grantViaRoot() {
