@@ -168,6 +168,18 @@ public class MainActivity extends Activity {
         }));
         col.addView(beh);
 
+        // ---- atalhos no painel de notificações
+        LinearLayout tl = Ui.card(this);
+        tl.addView(Ui.cardTitle(this, "Atalhos no painel"));
+        TextView td = Ui.text(this, "O app tem 3 botões para o painel de notificações:\n"
+                + "• Overlay: liga/desliga o overlay\n"
+                + "• Performance: liga/desliga o módulo Performance GPU+CPU (útil quando esquenta)\n"
+                + "• Limpar RAM: limpa a memória antes de jogar\n\n"
+                + "Para adicionar: puxe o painel de notificações, toque no lápis (editar) e arraste os três para a área de cima.",
+                13, Ui.SUB, false);
+        tl.addView(td);
+        col.addView(tl);
+
         // ---- ZRAM (edita o config.txt do módulo; vale no próximo boot)
         LinearLayout zr = Ui.card(this);
         zr.addView(Ui.cardTitle(this, "ZRAM (módulo)"));

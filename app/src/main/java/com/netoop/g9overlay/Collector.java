@@ -68,7 +68,7 @@ public class Collector {
 
     // ------------------------------------------------------------------ comando
 
-    public static final String VERSION = "1.3";
+    public static final String VERSION = "1.4";
 
     /** Acrescenta a leitura de um arquivo (função g9r do shell), a menos que ele esteja na lista de travados. */
     private void rd(StringBuilder c, String path) {

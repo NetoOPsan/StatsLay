@@ -5,6 +5,8 @@ import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.app.Service;
+import android.content.ComponentName;
+import android.service.quicksettings.TileService;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.graphics.Color;
@@ -110,6 +112,7 @@ public class OverlayService extends Service {
             }
             started = true;
             RUNNING = true;
+            pokeTile();
             probe = new SlowProbe(getPackageName());
             createOverlay();
             prefListener = new SharedPreferences.OnSharedPreferenceChangeListener() {
@@ -129,6 +132,7 @@ public class OverlayService extends Service {
         AppLog.log("svc", "onDestroy");
         running = false;
         RUNNING = false;
+        pokeTile();
         fastShell.close();
         slowShell.close();
         if (prefs != null && prefListener != null) prefs.unregisterListener(prefListener);
@@ -139,6 +143,14 @@ public class OverlayService extends Service {
             }
         }
         super.onDestroy();
+    }
+
+    /** Pede ao painel de notificações para atualizar o tile do overlay (ativo/parado). */
+    private void pokeTile() {
+        try {
+            TileService.requestListeningState(this, new ComponentName(this, OverlayTile.class));
+        } catch (Exception ignored) {
+        }
     }
 
     // ------------------------------------------------------------ notificação
