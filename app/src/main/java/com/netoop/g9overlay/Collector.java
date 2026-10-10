@@ -30,7 +30,7 @@ public class Collector {
     private static final String GPU = "/sys/class/kgsl/kgsl-3d0/";
     private static final String BAT = "/sys/class/power_supply/battery/";
 
-    private final String selfPkg;
+    private final SlowProbe probe;
     private Set<String> en;
     private int tick = 0;
 
@@ -39,13 +39,26 @@ public class Collector {
     private long prevSwpIn = -1, prevSwpOut = -1, prevVmMs = 0;
     private final Map<Integer, String> zoneTypes = new TreeMap<Integer, String>();
     private final List<Integer> tempZones = new ArrayList<Integer>();
-    private int targetPid = 0;
-    private String targetName = "";
-    private String fpsLayer = "";
-    private long prevFrameT = -1;
 
-    public Collector(String selfPkg) {
-        this.selfPkg = selfPkg;
+    // notas de diagnóstico para o log (o serviço chama drainNotes())
+    private final List<String> notes = new ArrayList<String>();
+    private final Set<String> noted = new HashSet<String>();
+    private boolean firstParse = true;
+    private String lastZoneDesc = "";
+
+    public Collector(SlowProbe probe) {
+        this.probe = probe;
+    }
+
+    public List<String> drainNotes() {
+        List<String> r = new ArrayList<String>(notes);
+        notes.clear();
+        return r;
+    }
+
+    /** Anota uma vez só (por chave). */
+    private void noteOnce(String key, String msg) {
+        if (noted.add(key)) notes.add(msg);
     }
 
     private boolean has(String k) {
@@ -54,7 +67,7 @@ public class Collector {
 
     // ------------------------------------------------------------------ comando
 
-    public static final String VERSION = "1.1";
+    public static final String VERSION = "1.2";
 
     /** Acrescenta a leitura de um arquivo (função g9r do shell), a menos que ele esteja na lista de travados. */
     private void rd(StringBuilder c, String path) {
@@ -103,26 +116,8 @@ public class Collector {
             rd(c, BAT + "status");
         }
 
-        // Qual é o app em primeiro plano? (processo com oom_score_adj = 0)
-        boolean needTarget = (has("app") || has("fps")) && !bad.contains("SCAN");
-        // 1ª vez, e depois a cada 5 ciclos (a cada 3 se ainda não achou nenhum app)
-        if (needTarget && (tick == 1 || (targetPid <= 0 ? tick % 3 == 0 : tick % 5 == 0))) {
-            c.append("echo '##SCAN'; for f in $(g9t 3 grep -l '^0$' /proc/[0-9]*/oom_score_adj); do "
-                    + "p=${f#/proc/}; p=${p%%/*}; "
-                    + "n=$(tr '\\000' ' ' < /proc/$p/cmdline); "
-                    + "m=$(grep VmRSS /proc/$p/status); "
-                    + "echo \"P $p ${n%% *} $m\"; done;");
-        }
-        if (has("app") && targetPid > 0) rd(c, "/proc/" + targetPid + "/status");
-
-        if (has("fps") && targetPid > 0 && !bad.contains("LAYERS") && !bad.contains("LAT")) {
-            if (fpsLayer.isEmpty() || tick % 10 == 0) {
-                c.append("echo '##LAYERS'; g9t 4 dumpsys SurfaceFlinger --list;");
-            }
-            if (!fpsLayer.isEmpty()) {
-                c.append("echo '##LAT'; g9t 4 dumpsys SurfaceFlinger --latency '").append(fpsLayer).append("';");
-            }
-        }
+        // App em foco: quem descobre o pid é o SlowProbe (shell separado); aqui só lemos o status dele.
+        if (has("app") && probe != null && probe.targetPid > 0) rd(c, "/proc/" + probe.targetPid + "/status");
 
         // "Prioridade absoluta": o Android reescreve esse valor de tempos em tempos,
         // por isso gravamos de novo a cada ciclo. -1000 = nunca morto por falta de memória.
@@ -193,7 +188,24 @@ public class Collector {
             }
         }
         if (has("temp")) chooseZones();
-        if (has("app") || has("fps")) pickTarget(sec.get("SCAN"));
+
+        if (firstParse) {
+            firstParse = false;
+            StringBuilder sb = new StringBuilder("seções lidas: ");
+            List<String> names = new ArrayList<String>(sec.keySet());
+            java.util.Collections.sort(names);
+            for (String k : names) sb.append(k).append('(').append(sec.get(k).size()).append(") ");
+            notes.add(sb.toString().trim());
+        }
+        if (has("temp") && !zoneTypes.isEmpty()) {
+            StringBuilder zd = new StringBuilder();
+            for (Map.Entry<Integer, String> e : zoneTypes.entrySet()) zd.append(e.getKey()).append('=').append(e.getValue()).append(' ');
+            String d = zd.toString().trim() + " | lendo: " + tempZones;
+            if (!d.equals(lastZoneDesc)) {
+                lastZoneDesc = d;
+                notes.add("zonas térmicas: " + d);
+            }
+        }
 
         List<Line> res = new ArrayList<Line>();
         List<String> mem = sec.get("/proc/meminfo");
@@ -288,6 +300,7 @@ public class Collector {
         if (has("psi")) {
             List<String> psi = sec.get("/proc/pressure/memory");
             if (psi == null || psi.isEmpty()) {
+                noteOnce("psi", "PSI: sem /proc/pressure/memory (kernel sem PSI)");
                 res.add(new Line("PSI  n/d (kernel sem PSI)", 3));
             } else {
                 double some = 0, full = 0;
@@ -320,20 +333,29 @@ public class Collector {
         // ---- Bateria
         if (has("bat")) res.add(batLine(sec));
 
-        // ---- App em foco
+        // ---- App em foco (pid/nome vêm do SlowProbe)
         if (has("app")) {
-            if (targetPid > 0 && targetName.length() > 0) {
-                List<String> st = sec.get("/proc/" + targetPid + "/status");
-                long rss = kv(st, "VmRSS:"), swp = kv(st, "VmSwap:");
-                res.add(new Line("APP  " + shortName(targetName) + "  " + gb(rss) + "  swap " + gb(swp),
-                        (rss > 0 && swp > rss) ? 1 : 0));
+            int pid = probe == null ? 0 : probe.targetPid;
+            String name = probe == null ? "" : probe.targetName;
+            if (pid > 0 && name.length() > 0) {
+                List<String> st = sec.get("/proc/" + pid + "/status");
+                if (st == null) {
+                    res.add(new Line("APP  " + shortName(name) + "  --", 3));
+                } else {
+                    long rss = kv(st, "VmRSS:"), swp = kv(st, "VmSwap:");
+                    res.add(new Line("APP  " + shortName(name) + "  " + gb(rss) + "  swap " + gb(swp),
+                            (rss > 0 && swp > rss) ? 1 : 0));
+                }
             } else {
                 res.add(new Line("APP  --", 3));
             }
         }
 
-        // ---- FPS (experimental)
-        if (has("fps")) res.add(fpsLine(sec));
+        // ---- FPS (experimental; medido pelo SlowProbe)
+        if (has("fps")) {
+            int f = probe == null ? -1 : probe.fps;
+            res.add(f < 0 ? new Line("FPS  --", 3) : new Line("FPS  " + f, (f > 0 && f < 25) ? 1 : 0));
+        }
 
         // ---- Custo do próprio overlay
         if (has("self")) {
@@ -396,7 +418,10 @@ public class Collector {
 
     private Line gpuLine(Map<String, List<String>> sec) {
         List<String> f = sec.get(GPU + "devfreq/cur_freq");
-        if (f == null || f.isEmpty()) return new Line("GPU  n/d", 3);
+        if (f == null || f.isEmpty()) {
+            noteOnce("gpu", "GPU: sem " + GPU + "devfreq/cur_freq (n/d)");
+            return new Line("GPU  n/d", 3);
+        }
         long mhz = toLong(f.get(0)) / 1000000;
         int busy = -1;
         List<String> p = sec.get(GPU + "gpu_busy_percentage");
@@ -496,7 +521,10 @@ public class Collector {
             sb.append(String.format(Locale.US, " BAT %.0f", bat));
             lv = Math.max(lv, bat >= 45 ? 2 : (bat >= 40 ? 1 : 0));
         }
-        if (cpu < 0 && gpu < 0 && pcb < 0 && bat < 0) return new Line("TEMP  n/d", 3);
+        if (cpu < 0 && gpu < 0 && pcb < 0 && bat < 0) {
+            noteOnce("temp", "TEMP: nenhum sensor lido (zonas=" + zoneTypes.size() + ", lendo=" + tempZones + ")");
+            return new Line("TEMP  n/d", 3);
+        }
         return new Line(sb.toString().replace("TEMP  ", "TEMP "), lv);
     }
 
@@ -511,81 +539,6 @@ public class Collector {
         String sh = s.startsWith("Charging") ? "carregando" : s.startsWith("Discharging") ? "descarga"
                 : s.startsWith("Full") ? "cheia" : s.toLowerCase(Locale.US);
         return new Line("BAT  " + toLong(cap.get(0)) + "%  " + ma + " mA  " + sh, 0);
-    }
-
-    private Line fpsLine(Map<String, List<String>> sec) {
-        // 1) escolhe a camada (layer) do app em foco
-        List<String> layers = sec.get("LAYERS");
-        if (layers != null && targetName.length() > 0) {
-            String best = "";
-            for (String l : layers) {
-                if (!l.contains(targetName) || l.startsWith("Background")) continue;
-                if (l.startsWith("SurfaceView")) {
-                    best = l;
-                    break;
-                }
-                if (best.isEmpty()) best = l;
-            }
-            if (!best.isEmpty() && !best.contains("'")) fpsLayer = best.trim();
-        }
-        // 2) conta quadros apresentados no último segundo
-        List<String> lat = sec.get("LAT");
-        if (lat == null || lat.size() < 2) {
-            if (fpsLayer.length() > 0 && lat != null) fpsLayer = ""; // camada sumiu: procurar de novo
-            return new Line("FPS  --", 3);
-        }
-        long tmax = -1;
-        List<Long> ts = new ArrayList<Long>();
-        for (int i = 1; i < lat.size(); i++) {
-            String[] p = lat.get(i).trim().split("\\s+");
-            if (p.length < 3) continue;
-            long t = toLong(p[1]);
-            if (t <= 0 || t == Long.MAX_VALUE) continue;
-            ts.add(t);
-            if (t > tmax) tmax = t;
-        }
-        if (ts.isEmpty()) return new Line("FPS  --", 3);
-        int n = 0;
-        for (long t : ts) {
-            if (t > tmax - 1000000000L) n++;
-        }
-        if (tmax == prevFrameT) n = 0; // nenhum quadro novo desde o ciclo anterior
-        prevFrameT = tmax;
-        return new Line("FPS  " + n, n > 0 && n < 25 ? 1 : 0);
-    }
-
-    // ------------------------------------------------------------------ alvo (app em foco)
-
-    private void pickTarget(List<String> scan) {
-        if (scan == null) return;
-        int bestPid = 0;
-        String bestName = "";
-        long bestRss = -1;
-        for (String l : scan) {
-            String[] t = l.trim().split("\\s+");
-            if (t.length < 3 || !t[0].equals("P")) continue;
-            String name = t[2];
-            if (name.indexOf('.') < 0 || name.startsWith("/") || name.equals(selfPkg)) continue;
-            long rss = 0;
-            for (int i = 3; i < t.length - 1; i++) {
-                if (t[i].equals("VmRSS:")) rss = toLong(t[i + 1]);
-            }
-            if (rss > bestRss) {
-                bestRss = rss;
-                bestPid = (int) toLong(t[1]);
-                bestName = name;
-            }
-        }
-        if (bestPid > 0) {
-            if (!bestName.equals(targetName)) {
-                fpsLayer = "";
-                prevFrameT = -1;
-            }
-            targetPid = bestPid;
-            targetName = bestName;
-        } else {
-            targetPid = 0;
-        }
     }
 
     // ------------------------------------------------------------------ utilidades
