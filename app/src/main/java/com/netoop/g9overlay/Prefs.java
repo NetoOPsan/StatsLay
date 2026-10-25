@@ -137,6 +137,15 @@ public final class Prefs {
         return sp.getBoolean("autostart", false);
     }
 
+    // ---- diagnóstico automático (grava no log os mesmos valores que eu pedia pelo Termux)
+    public boolean diagOn() {
+        return sp.getBoolean("diag_on", true);
+    }
+
+    public int diagIntervalSec() {
+        return clamp(sp.getInt("diag_sec", 15), 5, 300);
+    }
+
     public int posX() {
         return sp.getInt("pos_x", 8);
     }

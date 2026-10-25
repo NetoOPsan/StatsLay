@@ -40,6 +40,8 @@ public class MainActivity extends Activity {
     private Button[] zramBtns;
     private Button[] swpBtns;
     private int cfgMb = -1, cfgSw = -1; // valores do config.txt do módulo (-1 = desconhecido)
+    private static final int[] DIAG_SECS = {5, 15, 30, 60};
+    private Button[] diagBtns;
     private static final int[] INTERVALS = {500, 1000, 2000, 3000};
     private static final String[] INTERVAL_LABELS = {"0,5 s", "1 s", "2 s", "3 s"};
 
@@ -171,11 +173,13 @@ public class MainActivity extends Activity {
         // ---- atalhos no painel de notificações
         LinearLayout tl = Ui.card(this);
         tl.addView(Ui.cardTitle(this, "Atalhos no painel"));
-        TextView td = Ui.text(this, "O app tem 3 botões para o painel de notificações:\n"
+        TextView td = Ui.text(this, "O app tem 5 botões para o painel de notificações:\n"
                 + "• Overlay: liga/desliga o overlay\n"
                 + "• Performance: liga/desliga o módulo Performance GPU+CPU (útil quando esquenta)\n"
-                + "• Limpar RAM: limpa a memória antes de jogar\n\n"
-                + "Para adicionar: puxe o painel de notificações, toque no lápis (editar) e arraste os três para a área de cima.",
+                + "• Limpar RAM: limpa a memória antes de jogar\n"
+                + "• Gravar GPU: grava no log o estado da GPU agora (use quando o bug aparecer)\n"
+                + "• Destravar GPU: tenta soltar a GPU presa, um limite por vez\n\n"
+                + "Para adicionar: puxe o painel de notificações, toque no lápis (editar) e arraste os botões para a área de cima.",
                 13, Ui.SUB, false);
         tl.addView(td);
         col.addView(tl);
@@ -233,6 +237,48 @@ public class MainActivity extends Activity {
         TextView dd = Ui.text(this, "O app guarda um log de tudo que acontece (erros, tempos, sensores encontrados). Se algo falhar, copie o log e envie.", 13, Ui.SUB, false);
         dd.setPadding(0, 0, 0, Ui.dp(this, 6));
         diag.addView(dd);
+        diag.addView(switchRow("Diagnóstico automático",
+                "Grava no log, de tempos em tempos, limites de CPU/GPU, sensores e quem mudou o quê",
+                prefs.diagOn(), boolListener("diag_on")));
+        diag.addView(Ui.text(this, "Gravar a cada", 14, Ui.TEXT, false));
+        LinearLayout drow = new LinearLayout(this);
+        drow.setOrientation(LinearLayout.HORIZONTAL);
+        diagBtns = new Button[DIAG_SECS.length];
+        for (int i = 0; i < DIAG_SECS.length; i++) {
+            final int sec = DIAG_SECS[i];
+            diagBtns[i] = chipButton(sec + " s", new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    prefs.setInt("diag_sec", sec);
+                    refreshChoices();
+                }
+            });
+            drow.addView(diagBtns[i]);
+        }
+        diag.addView(drow);
+        diag.addView(Ui.button(this, "Registrar diagnóstico agora", false, new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                diagNow();
+            }
+        }));
+        diag.addView(Ui.button(this, "Destravar GPU", false, new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                Toast.makeText(MainActivity.this, "Tentando soltar a GPU...", Toast.LENGTH_SHORT).show();
+                GpuTools.unstick(MainActivity.this, new GpuTools.Callback() {
+                    @Override
+                    public void onResult(final String summary) {
+                        runOnUiThread(new Runnable() {
+                            @Override
+                            public void run() {
+                                Toast.makeText(MainActivity.this, summary, Toast.LENGTH_LONG).show();
+                            }
+                        });
+                    }
+                });
+            }
+        }));
         diag.addView(Ui.button(this, "Ver log", true, new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -344,6 +390,8 @@ public class MainActivity extends Activity {
         for (int i = 0; i < intervalBtns.length; i++) markSelected(intervalBtns[i], INTERVALS[i] == cur);
         int th = prefs.theme();
         for (int i = 0; i < themeBtns.length; i++) markSelected(themeBtns[i], i == th);
+        int ds = prefs.diagIntervalSec();
+        for (int i = 0; i < diagBtns.length; i++) markSelected(diagBtns[i], DIAG_SECS[i] == ds);
     }
 
     private void refreshStatus() {
@@ -529,6 +577,36 @@ public class MainActivity extends Activity {
                 })
                 .setNegativeButton("Cancelar", null)
                 .show();
+    }
+
+    /** Grava agora no log: o diagnóstico completo (limites, sensores, dmesg) + a gravação da GPU (caixa-preta). */
+    private void diagNow() {
+        Toast.makeText(this, "Gravando diagnóstico no log...", Toast.LENGTH_SHORT).show();
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                AppLog.init(MainActivity.this);
+                long now = System.currentTimeMillis();
+                DiagProbe d = new DiagProbe();
+                String out = Root.run(RootShell.PRELUDE + d.buildCommand(now, true), 25);
+                if (out.startsWith("ERRO")) {
+                    AppLog.log("diag-agora", "falhou: " + out);
+                } else {
+                    for (String l : d.parse(out, now)) AppLog.log("diag-agora", l);
+                }
+                GpuTools.record(MainActivity.this, "botão do app", new GpuTools.Callback() {
+                    @Override
+                    public void onResult(final String summary) {
+                        runOnUiThread(new Runnable() {
+                            @Override
+                            public void run() {
+                                Toast.makeText(MainActivity.this, "Diagnóstico gravado no log", Toast.LENGTH_SHORT).show();
+                            }
+                        });
+                    }
+                });
+            }
+        }, "g9ov-diag-now").start();
     }
 
     private void grantViaRoot() {

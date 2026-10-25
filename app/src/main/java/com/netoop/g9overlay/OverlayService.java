@@ -347,6 +347,42 @@ public class OverlayService extends Service {
                 startActivity(i);
             }
         }));
+        LinearLayout b3 = new LinearLayout(this);
+        b3.setOrientation(LinearLayout.HORIZONTAL);
+        b3.addView(smallButton("Gravar GPU", new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                GpuTools.record(OverlayService.this, "painel do overlay", new GpuTools.Callback() {
+                    @Override
+                    public void onResult(final String summary) {
+                        ui.post(new Runnable() {
+                            @Override
+                            public void run() {
+                                Toast.makeText(OverlayService.this, summary, Toast.LENGTH_SHORT).show();
+                            }
+                        });
+                    }
+                });
+            }
+        }));
+        b3.addView(smallButton("Destravar GPU", new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                Toast.makeText(OverlayService.this, "Tentando soltar a GPU...", Toast.LENGTH_SHORT).show();
+                GpuTools.unstick(OverlayService.this, new GpuTools.Callback() {
+                    @Override
+                    public void onResult(final String summary) {
+                        ui.post(new Runnable() {
+                            @Override
+                            public void run() {
+                                Toast.makeText(OverlayService.this, summary, Toast.LENGTH_LONG).show();
+                            }
+                        });
+                    }
+                });
+            }
+        }));
+        p.addView(b3);
         b2.addView(smallButton("Parar", new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -404,7 +440,7 @@ public class OverlayService extends Service {
                         AppLog.log("dog", "ciclo RÁPIDO preso há " + (now - f) + " ms; fechando su");
                         fastShell.close();
                     }
-                    if (s != 0 && now - s > 10000) {
+                    if (s != 0 && now - s > 15000) {
                         AppLog.log("dog", "ciclo LENTO preso há " + (now - s) + " ms; fechando su");
                         slowShell.close();
                     }
@@ -488,6 +524,15 @@ public class OverlayService extends Service {
                     prevCpuMs = cpuMs;
                     prevWall = wall;
                     lines = col.parse(out, System.currentTimeMillis(), readSelfRssKb(), selfPct);
+                    // caixa-preta da GPU: guarda 1 amostra por ciclo e avisa quando a GPU parece presa/limitada
+                    GpuBlackBox.Sample gs = col.lastGpuSample();
+                    if (gs != null) {
+                        String alert = GpuBlackBox.INSTANCE.push(gs);
+                        if (alert != null) {
+                            AppLog.log("gpu", "ALERTA AUTOMÁTICO: " + alert);
+                            GpuTools.record(OverlayService.this, "alerta automático", null);
+                        }
+                    }
                 } catch (Exception e) {
                     AppLog.log("rapido", "ERRO ao interpretar: " + e);
                     lines = errorLines("Erro ao interpretar: " + e);
@@ -520,10 +565,14 @@ public class OverlayService extends Service {
 
     private void slowLoop() {
         AppLog.log("lento", "loop iniciado");
+        DiagProbe diag = new DiagProbe();
         while (running) {
             boolean wantApp = prefs.on("app"), wantFps = prefs.on("fps");
             long now = System.currentTimeMillis();
             String cmd = probe.buildCommand(wantApp, wantFps, now);
+            // diagnóstico automático (os mesmos valores que eu pedia pelo Termux), a cada N segundos
+            boolean diagNow = prefs.diagOn() && diag.due(now, prefs.diagIntervalSec());
+            if (diagNow) cmd = cmd + diag.buildCommand(now, false);
             if (cmd.length() > 0) {
                 try {
                     if (!slowShell.isOpen()) {
@@ -540,6 +589,9 @@ public class OverlayService extends Service {
                     String out = slowShell.run(cmd);
                     slowTickStart = 0;
                     probe.parse(out, now);
+                    if (diagNow) {
+                        for (String l : diag.parse(out, now)) AppLog.log("diag", l);
+                    }
                     long ms = SystemClock.elapsedRealtime() - t0;
                     if (ms > 1500) AppLog.log("lento", "ciclo lento " + ms + " ms | passos: " + slowShell.lastTimings);
                 } catch (RootShell.ShellException e) {
@@ -548,7 +600,14 @@ public class OverlayService extends Service {
                     AppLog.log("lento", "FALHA: " + e.getMessage() + " | ms=" + e.ms + " | passos: " + e.timings);
                     AppLog.log("lento", "comando enviado: " + cmd);
                     AppLog.log("lento", "fim da saída recebida:\n" + e.tail);
-                    probe.noteHang(Collector.lastHeaderFrom(e.getMessage()), now);
+                    String h = Collector.lastHeaderFrom(e.getMessage());
+                    if (DiagProbe.ownsHeader(h)) {
+                        // travou no diagnóstico (não na busca do app): só ele é afetado
+                        String msg = diag.noteHang(h, now);
+                        if (msg != null) AppLog.log("lento", msg);
+                    } else {
+                        probe.noteHang(h, now);
+                    }
                 } catch (Exception e) {
                     slowTickStart = 0;
                     slowShell.close();

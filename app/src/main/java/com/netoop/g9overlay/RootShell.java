@@ -15,6 +15,19 @@ public class RootShell {
 
     private static final String END = "<<END>>";
 
+    /**
+     * Funções do shell usadas em todos os comandos. IMPORTANTE: nada de chamar a função de "r"!
+     * No mksh (o sh do Android) "r" é um alias padrão de "fc -e -", e o alias vence a função.
+     *  g9r ARQUIVO       : imprime "##ARQUIVO" e o conteúdo, só com comandos internos (sem criar processos)
+     *  g9t SEGUNDOS cmd  : roda com limite de tempo (se o 'timeout' existir)
+     * "exec 2>/dev/null": erros do shell e dos comandos não entram na saída que lemos.
+     */
+    public static final String PRELUDE =
+            "g9r() { [ -r \"$1\" ] || return; echo \"##$1\"; "
+                    + "while IFS= read -r l || [ -n \"$l\" ]; do printf '%s\\n' \"$l\"; l=; done < \"$1\"; }\n"
+                    + "g9t() { if command -v timeout >/dev/null 2>&1; then timeout \"$@\"; else shift; \"$@\"; fi; }\n"
+                    + "exec 2>/dev/null\n";
+
     /** Erro de leitura com tudo que ajuda a depurar (último arquivo lido, tempos, fim da saída). */
     public static class ShellException extends IOException {
         public final String last;
@@ -60,15 +73,7 @@ public class RootShell {
             proc = p;
             out = new BufferedWriter(new OutputStreamWriter(p.getOutputStream()));
             in = new BufferedReader(new InputStreamReader(p.getInputStream()));
-            // IMPORTANTE: nada de chamar a função de "r"! No mksh (o sh do Android) "r" é um alias
-            // padrão de "fc -e -", e o alias vence a função.
-            // g9r ARQUIVO: imprime "##ARQUIVO" e o conteúdo, só com comandos internos do shell.
-            out.write("g9r() { [ -r \"$1\" ] || return; echo \"##$1\"; "
-                    + "while IFS= read -r l || [ -n \"$l\" ]; do printf '%s\\n' \"$l\"; l=; done < \"$1\"; }\n");
-            // g9t SEGUNDOS comando...: roda com limite de tempo (se o 'timeout' existir).
-            out.write("g9t() { if command -v timeout >/dev/null 2>&1; then timeout \"$@\"; else shift; \"$@\"; fi; }\n");
-            // erros do shell e dos comandos não entram na saída que lemos
-            out.write("exec 2>/dev/null\n");
+            out.write(PRELUDE);
             out.flush();
             return true;
         } catch (IOException e) {

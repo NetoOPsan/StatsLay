@@ -12,8 +12,8 @@ android {
         // targetSdk 29 de propósito: app sideload com root; evita as exigências novas
         // (tipo de foreground service, permissão de notificação) de targets mais altos.
         targetSdk 29
-        versionCode 5
-        versionName "1.4"
+        versionCode 6
+        versionName "1.5"
     }
 
     buildTypes {

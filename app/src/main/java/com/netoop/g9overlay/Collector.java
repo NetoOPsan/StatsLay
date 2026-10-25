@@ -68,16 +68,28 @@ public class Collector {
 
     // ------------------------------------------------------------------ comando
 
-    public static final String VERSION = "1.4";
+    public static final String VERSION = "1.5";
 
     /** Acrescenta a leitura de um arquivo (função g9r do shell), a menos que ele esteja na lista de travados. */
     private void rd(StringBuilder c, String path) {
-        if (!bad.contains(path)) c.append("g9r ").append(path).append(';');
+        if (bad.contains(path) || !cmdPaths.add(path)) return; // já pedido neste comando
+        c.append("g9r ").append(path).append(';');
+    }
+
+    private final Set<String> cmdPaths = new HashSet<String>();
+    // valores calculados no último parse (alimentam a caixa-preta da GPU)
+    private int lastGpuTemp = -1, lastCpuTemp = -1, lastCpuPct = -1, lastGoldPct = -1, lastBusy = -1;
+    private GpuBlackBox.Sample lastSample = null;
+
+    /** Amostra da GPU do último parse (ou null se a métrica GPU estiver desligada). */
+    public GpuBlackBox.Sample lastGpuSample() {
+        return lastSample;
     }
 
     public String buildCommand(Set<String> enabled, int ownPid) {
         en = enabled;
         tick++;
+        cmdPaths.clear();
         StringBuilder c = new StringBuilder();
 
         if (has("cpu")) rd(c, "/proc/stat");
@@ -104,6 +116,15 @@ public class Collector {
             rd(c, GPU + "devfreq/cur_freq");
             rd(c, GPU + "gpu_busy_percentage");
             rd(c, GPU + "gpubusy");
+            // para a caixa-preta: clock REAL, piso/teto, governor, tabela e níveis de potência
+            rd(c, GPU + "gpuclk");
+            rd(c, GPU + "devfreq/min_freq");
+            rd(c, GPU + "devfreq/max_freq");
+            rd(c, GPU + "devfreq/governor");
+            rd(c, GPU + "devfreq/available_frequencies");
+            rd(c, GPU + "thermal_pwrlevel");
+            rd(c, GPU + "min_pwrlevel");
+            rd(c, GPU + "max_pwrlevel");
         }
         if (has("temp") && !bad.contains("ZONES")) {
             // Descobre quais "zonas térmicas" existem (1ª vez e a cada ~60 ciclos).
@@ -191,6 +212,8 @@ public class Collector {
                 cur.add(ln);
             }
         }
+        lastGpuTemp = lastCpuTemp = lastCpuPct = lastGoldPct = lastBusy = -1;
+        lastSample = null;
         if (has("temp")) chooseZones();
 
         if (firstParse) {
@@ -389,6 +412,8 @@ public class Collector {
             res.add(new Line(String.format(Locale.US, "OVL  %d MB  %.1f%% cpu", selfRssKb / 1024, selfCpuPct), 3));
         }
 
+        if (has("gpu")) lastSample = buildSample(sec, nowMs, probe == null ? -1 : probe.fps);
+
         if (res.isEmpty()) res.add(new Line("(nenhuma métrica ligada)", 3));
         return res;
     }
@@ -429,6 +454,8 @@ public class Collector {
         double s = sT > 0 ? 100.0 * (sT - sI) / sT : 0;
         double g = gT > 0 ? 100.0 * (gT - gI) / gT : 0;
         int lv = pct[0] > 95 ? 1 : 0;
+        lastCpuPct = (int) Math.round(pct[0]);
+        lastGoldPct = (int) Math.round(g);
         return new Line(String.format(Locale.US, "CPU  %.0f%%   S %.0f%%  G %.0f%%", pct[0], s, g), lv);
     }
 
@@ -464,7 +491,51 @@ public class Collector {
                 }
             }
         }
-        return new Line("GPU  " + mhz + " MHz  " + (busy >= 0 ? busy + "%" : "--"), 0);
+        lastBusy = busy;
+        // clock REAL (gpuclk): se diferir muito do "pedido" com a GPU trabalhando, é sinal de GPU presa/limitada
+        int real = (int) (firstNumberOf(sec.get(GPU + "gpuclk")) / 1000000);
+        String txt = "GPU  " + mhz + " MHz";
+        int lv = 0;
+        if (real > 0 && mhz > 0 && busy >= 30 && Math.abs(real - mhz) > mhz * 0.25) {
+            txt += " (real " + real + ")";
+            lv = real < mhz * 0.6 ? 2 : 1;
+        }
+        txt += "  " + (busy >= 0 ? busy + "%" : "--");
+        return new Line(txt, lv);
+    }
+
+    private static long firstNumberOf(List<String> l) {
+        return (l == null || l.isEmpty()) ? -1 : firstNumber(l.get(0));
+    }
+
+    /** Monta a amostra para a caixa-preta a partir do que foi lido neste ciclo. */
+    private GpuBlackBox.Sample buildSample(Map<String, List<String>> sec, long nowMs, int fps) {
+        long cur = firstNumberOf(sec.get(GPU + "devfreq/cur_freq"));
+        if (cur <= 0) return null;
+        long clk = firstNumberOf(sec.get(GPU + "gpuclk"));
+        long min = firstNumberOf(sec.get(GPU + "devfreq/min_freq"));
+        long max = firstNumberOf(sec.get(GPU + "devfreq/max_freq"));
+        long hwMax = -1, hwMin = -1;
+        List<String> av = sec.get(GPU + "devfreq/available_frequencies");
+        if (av != null && !av.isEmpty()) {
+            for (String tk : av.get(0).trim().split("\\s+")) {
+                long v = toLong(tk);
+                if (v <= 0) continue;
+                if (hwMax < 0 || v > hwMax) hwMax = v;
+                if (hwMin < 0 || v < hwMin) hwMin = v;
+            }
+        }
+        List<String> gv = sec.get(GPU + "devfreq/governor");
+        String gov = (gv == null || gv.isEmpty()) ? "?" : gv.get(0).trim();
+        return new GpuBlackBox.Sample(nowMs, mhz(cur), mhz(clk), mhz(min), mhz(max), mhz(hwMax), mhz(hwMin),
+                (int) firstNumberOf(sec.get(GPU + "thermal_pwrlevel")),
+                (int) firstNumberOf(sec.get(GPU + "min_pwrlevel")),
+                (int) firstNumberOf(sec.get(GPU + "max_pwrlevel")),
+                lastBusy, gov, lastGpuTemp, lastCpuPct, lastGoldPct, fps);
+    }
+
+    private static int mhz(long hz) {
+        return hz <= 0 ? -1 : (int) (hz / 1000000);
     }
 
     private Line limitLine(Map<String, List<String>> sec) {
@@ -530,6 +601,8 @@ public class Collector {
             long raw = toLong(bt.get(0));
             bat = raw > 100 ? raw / 10.0 : raw;
         }
+        lastGpuTemp = gpu >= 0 ? (int) Math.round(gpu) : -1;
+        lastCpuTemp = cpu >= 0 ? (int) Math.round(cpu) : -1;
         int lv = 0;
         StringBuilder sb = new StringBuilder("TEMP ");
         if (cpu >= 0) {

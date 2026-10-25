@@ -78,4 +78,85 @@ public final class TileScripts {
             return -1;
         }
     }
+
+    // ------------------------------------------------------------------ GPU
+
+    public static final String KGSL = "/sys/class/kgsl/kgsl-3d0";
+
+    /** Despeja o estado da GPU (arquivos do kgsl, temperaturas e linhas do dmesg) para o log. */
+    public static String gpuDiag() {
+        return gpuDiag(KGSL);
+    }
+
+    public static String gpuDiag(String g) {
+        return "G=" + g + "; for f in devfreq/governor devfreq/min_freq devfreq/max_freq devfreq/cur_freq "
+                + "devfreq/available_frequencies gpuclk max_gpuclk thermal_pwrlevel min_pwrlevel max_pwrlevel "
+                + "default_pwrlevel gpubusy gpu_busy_percentage idle_timer force_clk_on force_bus_on force_rail_on "
+                + "force_no_nap; do [ -r \"$G/$f\" ] && echo \"$f = $(cat \"$G/$f\")\"; done; "
+                + "echo '--- arquivos do kgsl:'; ls \"$G\"; "
+                + "echo '--- temperaturas:'; for z in /sys/class/thermal/thermal_zone*; do t=$(cat \"$z/type\" 2>/dev/null); "
+                + "case \"$t\" in *gpu*|msm_therm) echo \"$t $(cat \"$z/temp\" 2>/dev/null)\";; esac; done; "
+                + "echo '--- dmesg:'; dmesg 2>/dev/null | grep -iE 'kgsl|adreno|gpu|thermal|devfreq' | tail -40";
+    }
+
+    /**
+     * Tenta soltar a GPU, UM passo por vez, e imprime o clock depois de cada um. Assim o log mostra
+     * qual limite estava preso. Tudo volta ao padrão no reboot.
+     */
+    public static String gpuUnstick() {
+        return gpuUnstick(KGSL);
+    }
+
+    public static String gpuUnstick(String g) {
+        return "G=" + g + "; "
+                + "rd() { echo \"cur=$(cat $G/devfreq/cur_freq) clk=$(cat $G/gpuclk 2>/dev/null) busy=$(cat $G/gpubusy 2>/dev/null) "
+                + "lim=$(cat $G/thermal_pwrlevel 2>/dev/null):$(cat $G/max_pwrlevel 2>/dev/null):$(cat $G/devfreq/max_freq)\"; }; "
+                + "MAXF=$(tr ' ' '\\n' < $G/devfreq/available_frequencies | sort -n | tail -n 1); "
+                + "MINF=$(cat $G/devfreq/min_freq); "
+                + "echo \"ANTES $(rd)\"; "
+                + "echo 0 > $G/thermal_pwrlevel; sleep 1; echo \"PASSO1 thermal_pwrlevel=0 $(rd)\"; "
+                + "echo 0 > $G/max_pwrlevel; sleep 1; echo \"PASSO2 max_pwrlevel=0 $(rd)\"; "
+                + "echo $MAXF > $G/devfreq/max_freq; sleep 1; echo \"PASSO3 devfreq/max_freq=$MAXF $(rd)\"; "
+                + "echo msm-adreno-tz > $G/devfreq/governor; sleep 1; echo \"PASSO4 governor=msm-adreno-tz $(rd)\"; "
+                + "echo $MAXF > $G/devfreq/min_freq; sleep 1; echo \"PASSO5 min_freq=max (pino temporario) $(rd)\"; "
+                + "echo $MINF > $G/devfreq/min_freq; sleep 1; echo \"PASSO6 min_freq restaurado=$MINF $(rd)\"; "
+                + "echo FIM";
+    }
+
+    /** Diz em que passo o clock subiu (ou que nenhum mudou). */
+    public static String parseUnstick(String out) {
+        long baseCur = -1, baseClk = -1;
+        for (String l : out.split("\n")) {
+            String t = l.trim();
+            boolean antes = t.startsWith("ANTES");
+            boolean passo = t.startsWith("PASSO");
+            if (!antes && !passo) continue;
+            long cur = numAfter(t, "cur="), clk = numAfter(t, "clk=");
+            if (antes) {
+                baseCur = cur;
+                baseClk = clk;
+                continue;
+            }
+            boolean up = (baseCur > 0 && cur > baseCur * 3 / 2) || (baseClk > 0 && clk > baseClk * 3 / 2);
+            if (up) {
+                int sp = t.indexOf(' ');
+                int sp2 = sp < 0 ? -1 : t.indexOf(" cur=");
+                return "Clock subiu em " + t.substring(0, sp < 0 ? t.length() : sp)
+                        + (sp2 > sp ? " (" + t.substring(sp + 1, sp2) + ")" : "");
+            }
+        }
+        return "Nenhum passo mudou o clock (veja o log)";
+    }
+
+    private static long numAfter(String s, String key) {
+        int i = s.indexOf(key);
+        if (i < 0) return -1;
+        StringBuilder d = new StringBuilder();
+        for (int j = i + key.length(); j < s.length() && Character.isDigit(s.charAt(j)); j++) d.append(s.charAt(j));
+        try {
+            return d.length() == 0 ? -1 : Long.parseLong(d.toString());
+        } catch (Exception e) {
+            return -1;
+        }
+    }
 }
