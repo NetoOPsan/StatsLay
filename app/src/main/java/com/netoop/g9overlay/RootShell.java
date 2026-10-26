@@ -18,7 +18,7 @@ public class RootShell {
     /**
      * Funções do shell usadas em todos os comandos. IMPORTANTE: nada de chamar a função de "r"!
      * No mksh (o sh do Android) "r" é um alias padrão de "fc -e -", e o alias vence a função.
-     *  g9r ARQUIVO       : imprime "##ARQUIVO" e o conteúdo, só com comandos internos (sem criar processos)
+     *  g9r ARQUIVO       : imprime "##ARQUIVO" e o conteúdo, só com comandos internos (lento sob carga; evite)
      *  g9t SEGUNDOS cmd  : roda com limite de tempo (se o 'timeout' existir)
      * "exec 2>/dev/null": erros do shell e dos comandos não entram na saída que lemos.
      */
@@ -26,6 +26,11 @@ public class RootShell {
             "g9r() { [ -r \"$1\" ] || return; echo \"##$1\"; "
                     + "while IFS= read -r l || [ -n \"$l\" ]; do printf '%s\\n' \"$l\"; l=; done < \"$1\"; }\n"
                     + "g9t() { if command -v timeout >/dev/null 2>&1; then timeout \"$@\"; else shift; \"$@\"; fi; }\n"
+                    // g9g ARQ...: lê VÁRIOS arquivos de uma vez com UM processo (grep -H '^'). Saída: "/arquivo:linha".
+                    // Muito mais barato que ler byte a byte com 'read' quando a CPU está saturada pelo jogo.
+                    + "g9g() { g9t 5 grep -H '^' \"$@\"; }\n"
+                    // o shell fica com prioridade alta: sem isso o jogo (100% de CPU) deixa o nosso shell esperando
+                    + "renice -n -10 -p $$ >/dev/null 2>&1\n"
                     + "exec 2>/dev/null\n";
 
     /** Erro de leitura com tudo que ajuda a depurar (último arquivo lido, tempos, fim da saída). */

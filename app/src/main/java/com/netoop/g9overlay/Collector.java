@@ -68,13 +68,15 @@ public class Collector {
 
     // ------------------------------------------------------------------ comando
 
-    public static final String VERSION = "1.5";
+    public static final String VERSION = "1.6";
 
     /** Acrescenta a leitura de um arquivo (função g9r do shell), a menos que ele esteja na lista de travados. */
     private void rd(StringBuilder c, String path) {
         if (bad.contains(path) || !cmdPaths.add(path)) return; // já pedido neste comando
-        c.append("g9r ").append(path).append(';');
+        pending.add(path);                                      // vai tudo num único "g9g" no fim
     }
+
+    private final List<String> pending = new ArrayList<String>();
 
     private final Set<String> cmdPaths = new HashSet<String>();
     // valores calculados no último parse (alimentam a caixa-preta da GPU)
@@ -90,6 +92,7 @@ public class Collector {
         en = enabled;
         tick++;
         cmdPaths.clear();
+        pending.clear();
         StringBuilder c = new StringBuilder();
 
         if (has("cpu")) rd(c, "/proc/stat");
@@ -128,10 +131,7 @@ public class Collector {
         }
         if (has("temp") && !bad.contains("ZONES")) {
             // Descobre quais "zonas térmicas" existem (1ª vez e a cada ~60 ciclos).
-            if (zoneTypes.isEmpty() || tick % 60 == 1) {
-                c.append("for z in /sys/class/thermal/thermal_zone*; do read t < \"$z/type\"; "
-                        + "echo \"##Z ${z##*thermal_zone} $t\"; done;");
-            }
+            if (zoneTypes.isEmpty() || tick % 60 == 1) rd(c, "/sys/class/thermal/thermal_zone*/type");
             for (int z : tempZones) rd(c, "/sys/class/thermal/thermal_zone" + z + "/temp");
         }
         if (has("bat") || has("temp")) rd(c, BAT + "temp");
@@ -143,6 +143,13 @@ public class Collector {
 
         // App em foco: quem descobre o pid é o SlowProbe (shell separado); aqui só lemos o status dele.
         if (has("app") && probe != null && probe.targetPid > 0) rd(c, "/proc/" + probe.targetPid + "/status");
+
+        // Todas as leituras de arquivos, num ÚNICO processo (grep -H).
+        if (!pending.isEmpty()) {
+            c.append("g9g");
+            for (String p : pending) c.append(' ').append(p);
+            c.append(';');
+        }
 
         // "Prioridade absoluta": o Android reescreve esse valor de tempos em tempos,
         // por isso gravamos de novo a cada ciclo. -1000 = nunca morto por falta de memória.
@@ -189,27 +196,17 @@ public class Collector {
     // ------------------------------------------------------------------ leitura
 
     public List<Line> parse(String out, long nowMs, long selfRssKb, double selfCpuPct) {
-        // Divide a saída em seções: "##nome" + linhas seguintes.
-        Map<String, List<String>> sec = new HashMap<String, List<String>>();
-        List<String> cur = null;
-        for (String ln : out.split("\n")) {
-            if (ln.startsWith("##")) {
-                String h = ln.substring(2).trim();
-                if (h.startsWith("Z ")) {
-                    String[] p = h.split("\\s+", 3);
-                    if (p.length == 3) {
-                        try {
-                            zoneTypes.put(Integer.parseInt(p[1]), p[2]);
-                        } catch (NumberFormatException ignored) {
-                        }
-                    }
-                    cur = null;
-                } else {
-                    cur = new ArrayList<String>();
-                    sec.put(h, cur);
+        // Divide a saída em seções (formatos "##nome" e "/caminho:linha").
+        Map<String, List<String>> sec = Out.sections(out);
+        // tipos das zonas térmicas: /sys/class/thermal/thermal_zoneN/type
+        for (Map.Entry<String, List<String>> e : sec.entrySet()) {
+            String k = e.getKey();
+            if (k.startsWith("/sys/class/thermal/thermal_zone") && k.endsWith("/type") && !e.getValue().isEmpty()) {
+                try {
+                    int idx = Integer.parseInt(k.substring("/sys/class/thermal/thermal_zone".length(), k.length() - "/type".length()));
+                    zoneTypes.put(idx, e.getValue().get(0).trim());
+                } catch (NumberFormatException ignored) {
                 }
-            } else if (cur != null) {
-                cur.add(ln);
             }
         }
         lastGpuTemp = lastCpuTemp = lastCpuPct = lastGoldPct = lastBusy = -1;

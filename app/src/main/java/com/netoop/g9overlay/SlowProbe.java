@@ -73,14 +73,14 @@ public class SlowProbe {
             lastScanMs = now;
             if (uidMap.isEmpty() || now - lastPkgMs >= 60000) {
                 lastPkgMs = now;
-                c.append("g9r ").append(packagesList).append(';');
+                c.append("echo '##PKGS'; cat ").append(packagesList).append(';');
             }
-            // Candidatos = processos com oom_score_adj 0 (o app na tela). Para cada um: uid e VmRSS.
-            c.append("echo '##SCAN'; for f in $(g9t 3 grep -l '^0$' /proc/[0-9]*/oom_score_adj); do "
-                    + "p=${f#/proc/}; p=${p%%/*}; echo \"##SP $p\"; "
-                    + "u=$(g9t 2 grep '^Uid:' /proc/$p/status); "
-                    + "m=$(g9t 2 grep VmRSS /proc/$p/status); "
-                    + "echo \"P $p $u $m\"; done;");
+            // Candidatos = processos com oom_score_adj 0 (no celular são centenas: threads do kernel e daemons).
+            // Antes eram 3 processos por candidato (~15 s); agora são 2 no total: um grep acha os candidatos
+            // e outro lê o Uid e o VmRSS de todos de uma vez ("/proc/PID/status:Uid:...").
+            c.append("echo '##SCAN'; fl=$(g9t 3 grep -l '^0$' /proc/[0-9]*/oom_score_adj); st=; "
+                    + "for f in $fl; do st=\"$st ${f%/oom_score_adj}/status\"; done; "
+                    + "g9t 4 grep -H -E '^(Uid|VmRSS):' $st;");
             // Plano B (só enquanto não há alvo): pacote da janela com foco + pid dele.
             // Ex.: mCurrentFocus=Window{1a2b u0 dev.eden.eden_emulator/...Activity}
             if (targetPid <= 0) {
@@ -118,20 +118,9 @@ public class SlowProbe {
 
     public void parse(String out, long now) {
         hangCount.clear();
-        Map<String, List<String>> sec = new HashMap<String, List<String>>();
-        List<String> cur = null;
-        List<String> pLines = new ArrayList<String>(); // linhas "P pid Uid: ... VmRSS: ..." (ficam sob vários "##SP n")
-        for (String ln : out.split("\n")) {
-            if (ln.startsWith("##")) {
-                cur = new ArrayList<String>();
-                sec.put(ln.substring(2).trim(), cur);
-            } else {
-                if (ln.startsWith("P ")) pLines.add(ln);
-                if (cur != null) cur.add(ln);
-            }
-        }
+        Map<String, List<String>> sec = Out.sections(out);
 
-        List<String> pk = sec.get(packagesList);
+        List<String> pk = sec.get("PKGS");
         if (pk != null) {
             uidMap.clear();
             for (String l : pk) {
@@ -146,41 +135,46 @@ public class SlowProbe {
             note("packages.list: " + uidMap.size() + " entradas");
         }
 
-        if (sec.containsKey("SCAN")) pickTarget(pLines);
+        if (sec.containsKey("SCAN")) pickTarget(sec);
         if (targetPid <= 0 && sec.containsKey("FOCUS")) useFocus(sec.get("FOCUS"));
 
         if (sec.containsKey("LAYERS")) chooseLayer(sec.get("LAYERS"));
         if (sec.containsKey("LAT")) computeFps(sec.get("LAT"));
     }
 
-    private void pickTarget(List<String> scan) {
+    private void pickTarget(Map<String, List<String>> sec) {
         int bestPid = 0;
         String bestName = "";
         long bestRss = -1;
-        int cand = 0;
+        int cand = 0, mapped = 0;
         StringBuilder desc = new StringBuilder();
-        for (String l : scan) {
-            String[] t = l.trim().split("\\s+");
-            if (t.length < 3 || !t[0].equals("P")) continue;
-            cand++;
+        for (Map.Entry<String, List<String>> e : sec.entrySet()) {
+            String k = e.getKey();
+            if (!k.startsWith("/proc/") || !k.endsWith("/status")) continue;
+            int pid = (int) num(k.substring(6, k.length() - 7));
+            if (pid <= 0) continue;
             long uid = -1, rss = 0;
-            for (int i = 2; i < t.length - 1; i++) {
-                if (t[i].equals("Uid:")) uid = num(t[i + 1]);
-                if (t[i].equals("VmRSS:")) rss = num(t[i + 1]);
+            for (String l : e.getValue()) {
+                String[] t = l.trim().split("\\s+");
+                if (t.length >= 2 && t[0].equals("Uid:")) uid = num(t[1]);
+                else if (t.length >= 2 && t[0].equals("VmRSS:")) rss = num(t[1]);
             }
-            String pkg = uid >= minUid ? uidMap.get((int) uid) : null;
-            desc.append(t[1]).append('/').append(uid).append('/').append(pkg == null ? "-" : pkg).append(' ');
+            cand++;
+            if (uid < minUid) continue;          // threads do kernel e daemons (uid 0/1000...) não são "o app na tela"
+            String pkg = uidMap.get((int) uid);
+            if (desc.length() < 400) desc.append(pid).append('/').append(uid).append('/').append(pkg == null ? "-" : pkg).append(' ');
             if (pkg == null || pkg.equals(selfPkg)) continue;
+            mapped++;
             if (rss > bestRss) {
                 bestRss = rss;
-                bestPid = (int) num(t[1]);
+                bestPid = pid;
                 bestName = pkg;
             }
         }
         if (!bestName.equals(targetName) || bestPid != targetPid) {
             note("alvo: " + (bestName.isEmpty() ? "(nenhum)" : bestName + " pid=" + bestPid)
-                    + " | " + cand + " proc(s) com adj 0, uidMap=" + uidMap.size() + " entradas"
-                    + " | candidatos(pid/uid/pacote): " + desc.toString().trim());
+                    + " | " + cand + " proc(s) com adj 0, " + mapped + " app(s) com pacote, uidMap=" + uidMap.size()
+                    + " | apps(pid/uid/pacote): " + desc.toString().trim());
         }
         if (bestPid > 0) {
             if (!bestName.equals(targetName)) {

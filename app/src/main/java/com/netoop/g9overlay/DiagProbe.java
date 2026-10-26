@@ -47,8 +47,10 @@ public class DiagProbe {
         return now >= pausedUntil && now - lastSnapMs >= intervalSec * 1000L - 200;
     }
 
+    private final List<String> pending = new ArrayList<String>();
+
     private void rd(StringBuilder c, String path) {
-        if (!bad.contains(path)) c.append("g9r ").append(path).append(';');
+        if (!bad.contains(path)) pending.add(path); // vai tudo num único "g9g" (grep -H) no fim
     }
 
     // ------------------------------------------------------------------ comando
@@ -56,6 +58,7 @@ public class DiagProbe {
     /** full=true: também lê o dmesg (usado no botão "Registrar agora"). */
     public String buildCommand(long now, boolean full) {
         StringBuilder c = new StringBuilder();
+        pending.clear();
         String[] g = {"devfreq/governor", "devfreq/min_freq", "devfreq/max_freq", "devfreq/cur_freq",
                 "devfreq/available_frequencies", "thermal_pwrlevel", "min_pwrlevel", "max_pwrlevel",
                 "default_pwrlevel", "max_gpuclk", "gpuclk", "force_clk_on", "force_bus_on", "force_rail_on",
@@ -71,13 +74,18 @@ public class DiagProbe {
         rd(c, "/proc/meminfo");
         rd(c, "/proc/pressure/memory");
         if (!bad.contains("TZ")) {
-            c.append("for z in ").append(thermal).append("thermal_zone*; do t=; v=; read t < \"$z/type\"; read v < \"$z/temp\"; "
-                    + "echo \"##TZ ${z##*thermal_zone} $t $v\"; done;");
+            rd(c, thermal + "thermal_zone*/type");
+            rd(c, thermal + "thermal_zone*/temp");
         }
         if (!bad.contains("CD")) {
-            c.append("for k in ").append(thermal).append("cooling_device*; do t=; a=; m=; read t < \"$k/type\"; "
-                    + "read a < \"$k/cur_state\"; read m < \"$k/max_state\"; "
-                    + "echo \"##CD ${k##*cooling_device} $t $a $m\"; done;");
+            rd(c, thermal + "cooling_device*/type");
+            rd(c, thermal + "cooling_device*/cur_state");
+            rd(c, thermal + "cooling_device*/max_state");
+        }
+        if (!pending.isEmpty()) {
+            c.append("g9g");
+            for (String p : pending) c.append(' ').append(p);
+            c.append(';');
         }
         if (full || now - lastDmesgMs >= 60000) {
             lastDmesgMs = now;
@@ -116,26 +124,31 @@ public class DiagProbe {
         lastSnapMs = now;
         hangCount.clear();
         List<String> res = new ArrayList<String>();
-        Map<String, List<String>> sec = new HashMap<String, List<String>>();
+        Map<String, List<String>> sec = Out.sections(out);
         List<String[]> tz = new ArrayList<String[]>();
         List<String[]> cd = new ArrayList<String[]>();
-        List<String> cur = null;
-        for (String ln : out.split("\n")) {
-            if (ln.startsWith("##")) {
-                String h = ln.substring(2).trim();
-                if (h.startsWith("TZ ")) {
-                    tz.add(h.split("\\s+"));
-                    cur = null;
-                } else if (h.startsWith("CD ")) {
-                    cd.add(h.split("\\s+"));
-                    cur = null;
-                } else {
-                    cur = new ArrayList<String>();
-                    sec.put(h, cur);
+        String zp = thermal + "thermal_zone", cp = thermal + "cooling_device";
+        java.util.TreeSet<Integer> zi = new java.util.TreeSet<Integer>(), ci = new java.util.TreeSet<Integer>();
+        for (String k : sec.keySet()) {
+            if (k.startsWith(zp) && k.endsWith("/type")) {
+                try {
+                    zi.add(Integer.parseInt(k.substring(zp.length(), k.length() - 5)));
+                } catch (NumberFormatException ignored) {
                 }
-            } else if (cur != null) {
-                cur.add(ln);
+            } else if (k.startsWith(cp) && k.endsWith("/type")) {
+                try {
+                    ci.add(Integer.parseInt(k.substring(cp.length(), k.length() - 5)));
+                } catch (NumberFormatException ignored) {
+                }
             }
+        }
+        for (int i : zi) {
+            String type = val(sec, zp + i + "/type"), temp = val(sec, zp + i + "/temp");
+            if (type != null && temp != null) tz.add(new String[]{"TZ", String.valueOf(i), type, temp});
+        }
+        for (int i : ci) {
+            String type = val(sec, cp + i + "/type"), cur = val(sec, cp + i + "/cur_state"), mx = val(sec, cp + i + "/max_state");
+            if (type != null && cur != null && mx != null) cd.add(new String[]{"CD", String.valueOf(i), type, cur, mx});
         }
 
         // ---- GPU
