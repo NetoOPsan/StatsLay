@@ -42,6 +42,7 @@ public class MainActivity extends Activity {
     private int cfgMb = -1, cfgSw = -1; // valores do config.txt do módulo (-1 = desconhecido)
     private static final int[] DIAG_SECS = {5, 15, 30, 60};
     private Button[] diagBtns;
+    private final java.util.List<Object[]> choices = new java.util.ArrayList<Object[]>(); // {Button[], chave, int[] valores, padrão}
     private static final int[] INTERVALS = {500, 1000, 2000, 3000};
     private static final String[] INTERVAL_LABELS = {"0,5 s", "1 s", "2 s", "3 s"};
 
@@ -112,6 +113,35 @@ public class MainActivity extends Activity {
             col.addView(card);
         }
 
+        // ---- layout e perfis
+        LinearLayout lay = Ui.card(this);
+        lay.addView(Ui.cardTitle(this, "Layout e perfis"));
+        lay.addView(Ui.text(this, "Perfis prontos (trocam layout e métricas de uma vez)", 14, Ui.TEXT, false));
+        LinearLayout prow = new LinearLayout(this);
+        prow.setOrientation(LinearLayout.HORIZONTAL);
+        String[] presetNames = {"Completo", "GameHub", "Mínimo", "Diagnóstico"};
+        for (int i = 0; i < presetNames.length; i++) {
+            final int pi = i;
+            prow.addView(chipButton(presetNames[i], new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    prefs.applyPreset(pi);
+                    Toast.makeText(MainActivity.this, "Perfil aplicado", Toast.LENGTH_SHORT).show();
+                    recreate();
+                }
+            }));
+        }
+        lay.addView(prow);
+        lay.addView(Ui.text(this, "Formato", 14, Ui.TEXT, false));
+        lay.addView(choiceRow(new String[]{"Lista", "Barra"}, "layout", new int[]{0, 1}, 0));
+        lay.addView(Ui.text(this, "Estilo da barra", 14, Ui.TEXT, false));
+        lay.addView(choiceRow(new String[]{"Contínua", "Chips"}, "bar_style", new int[]{0, 1}, 1));
+        lay.addView(Ui.text(this, "Posição no topo", 14, Ui.TEXT, false));
+        lay.addView(choiceRow(new String[]{"Esquerda", "Centro", "Direita"}, "anchor", new int[]{0, 1, 2}, 0));
+        lay.addView(seek("Largura máxima da barra", "bar_width", 40, 100, 96, "%"));
+        lay.addView(switchRow("Clock em GHz", "Mostra 1.8/2.0G em vez de 1804/2016", prefs.ghz(), boolListener("ghz")));
+        col.addView(lay);
+
         // ---- aparência
         LinearLayout look = Ui.card(this);
         look.addView(Ui.cardTitle(this, "Aparência"));
@@ -137,7 +167,48 @@ public class MainActivity extends Activity {
         look.addView(switchRow("Cores de alerta", "Amarelo/vermelho quando algo passa do limite", prefs.colorize(),
                 boolListener("colorize")));
         look.addView(switchRow("Texto em negrito", "Mais legível sobre jogos claros", prefs.bold(), boolListener("bold")));
+        look.addView(Ui.text(this, "Fonte", 14, Ui.TEXT, false));
+        look.addView(choiceRow(new String[]{"Mono", "Sans", "Condensada"}, "font", new int[]{0, 1, 2}, 0));
+        look.addView(switchRow("Cor de destaque própria", "Usa o matiz abaixo em vez da cor do tema", prefs.accentCustom(), boolListener("accent_on")));
+        look.addView(seek("Matiz da cor de destaque", "accent_hue", 0, 360, 190, "°"));
+        look.addView(seek("Opacidade do texto", "text_alpha", 30, 100, 100, "%"));
+        look.addView(seek("Espaçamento interno", "pad_dp", 0, 14, 6, " dp"));
+        look.addView(switchRow("Borda", "Contorno na cor de destaque", prefs.border(), boolListener("border")));
+        look.addView(switchRow("Sombra no texto", "Ajuda a ler sobre jogos claros", prefs.shadow(), boolListener("shadow")));
         col.addView(look);
+
+        // ---- GPU: guarda e fixação
+        LinearLayout gpu = Ui.card(this);
+        gpu.addView(Ui.cardTitle(this, "GPU: guarda"));
+        TextView gd = Ui.text(this, "O app mostra se a GPU está normal, limitada ou presa no mínimo (ligue \"Estado da GPU\"). "
+                + "O guarda tenta soltá-la sozinho quando ela fica limitada ou presa. Ele NUNCA age acima da temperatura abaixo: "
+                + "aí a proteção do kernel precisa valer.", 13, Ui.SUB, false);
+        gd.setPadding(0, 0, 0, Ui.dp(this, 6));
+        gpu.addView(gd);
+        gpu.addView(switchRow("Guarda da GPU", "Solta a GPU sozinho (limite de tentativas e de temperatura)", prefs.guardOn(), boolListener("guard_on")));
+        gpu.addView(seek("Não agir acima de", "guard_temp", 70, 95, 88, " °C"));
+        gpu.addView(switchRow("Fixar GPU no máximo", "Piso = máximo enquanto o overlay roda (mais calor)", prefs.gpuPin(), boolListener("gpu_pin")));
+        gpu.addView(Ui.button(this, "Destravar GPU agora", false, new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                Toast.makeText(MainActivity.this, "Soltando a GPU...", Toast.LENGTH_SHORT).show();
+                new Thread(new Runnable() {
+                    @Override
+                    public void run() {
+                        final String out = Root.run(TileScripts.gpuFreeAll(), 20);
+                        AppLog.init(MainActivity.this);
+                        AppLog.log("ui", "destravar GPU: " + out.replace('\n', ' '));
+                        runOnUiThread(new Runnable() {
+                            @Override
+                            public void run() {
+                                Toast.makeText(MainActivity.this, out.length() > 120 ? out.substring(0, 120) : out, Toast.LENGTH_LONG).show();
+                            }
+                        });
+                    }
+                }).start();
+            }
+        }));
+        col.addView(gpu);
 
         // ---- comportamento
         LinearLayout beh = Ui.card(this);
@@ -362,6 +433,26 @@ public class MainActivity extends Activity {
         return box;
     }
 
+    /** Linha de botões "um entre vários" ligada a uma configuração inteira. */
+    private View choiceRow(String[] labels, final String key, final int[] values, int def) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        Button[] bs = new Button[labels.length];
+        for (int i = 0; i < labels.length; i++) {
+            final int v = values[i];
+            bs[i] = chipButton(labels[i], new View.OnClickListener() {
+                @Override
+                public void onClick(View x) {
+                    prefs.setInt(key, v);
+                    refreshChoices();
+                }
+            });
+            row.addView(bs[i]);
+        }
+        choices.add(new Object[]{bs, key, values, Integer.valueOf(def)});
+        return row;
+    }
+
     private Button chipButton(String label, View.OnClickListener l) {
         Button b = Ui.button(this, label, false, l);
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
@@ -392,6 +483,12 @@ public class MainActivity extends Activity {
         for (int i = 0; i < themeBtns.length; i++) markSelected(themeBtns[i], i == th);
         int ds = prefs.diagIntervalSec();
         for (int i = 0; i < diagBtns.length; i++) markSelected(diagBtns[i], DIAG_SECS[i] == ds);
+        for (Object[] c : choices) {
+            Button[] bs = (Button[]) c[0];
+            int[] vals = (int[]) c[2];
+            int curVal = prefs.getInt((String) c[1], (Integer) c[3]);
+            for (int i = 0; i < bs.length; i++) markSelected(bs[i], vals[i] == curVal);
+        }
     }
 
     private void refreshStatus() {

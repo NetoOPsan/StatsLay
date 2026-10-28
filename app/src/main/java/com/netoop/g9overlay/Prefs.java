@@ -12,16 +12,16 @@ public final class Prefs {
     /** Chaves das métricas (mesma ordem de LABELS e DESCS). */
     public static final String[] KEYS = {
             "ram", "zram", "swap", "swapio", "psi", "cpu", "cpufreq",
-            "gpu", "temp", "bat", "app", "fps", "limit", "self"
+            "gpu", "gpustatus", "temp", "bat", "app", "fps", "limit", "self"
     };
     public static final String[] LABELS = {
             "RAM", "ZRAM", "Swap em disco", "Swap I/O", "Pressão de memória", "CPU %", "CPU clocks",
-            "GPU", "Temperaturas", "Bateria", "App em foco", "FPS (experimental)", "Limites / throttling", "Custo do overlay"
+            "GPU", "Estado da GPU", "Temperaturas", "Bateria", "App em foco", "FPS (experimental)", "Limites / throttling", "Custo do overlay"
     };
     public static final String[] DESCS = {
             "Usada, total e livre", "Usado, RAM real e taxa de compressão", "Uso do swap em arquivo/disco",
             "MB/s trocados com o swap", "Tempo parado esperando memória (PSI)", "Total e por cluster (S/G)",
-            "MHz de cada núcleo", "Clock e ocupação", "CPU, GPU, placa e bateria", "Nível, corrente e estado",
+            "MHz de cada núcleo", "Clock e ocupação", "Normal, limitada ou presa no mínimo", "CPU, GPU, placa e bateria", "Nível, corrente e estado",
             "RAM e swap do app na tela", "Quadros por segundo do app na tela", "Aviso se clock/GPU estão limitados",
             "RAM e CPU do próprio overlay"
     };
@@ -30,7 +30,7 @@ public final class Prefs {
     public static final String[][] GROUPS = {
             {"Memória", "ram", "zram", "swap", "swapio", "psi"},
             {"Processador", "cpu", "cpufreq", "limit"},
-            {"Gráficos", "gpu", "fps"},
+            {"Gráficos", "gpu", "gpustatus", "fps"},
             {"Sistema", "temp", "bat", "app", "self"}
     };
 
@@ -118,6 +118,102 @@ public final class Prefs {
 
     public boolean bold() {
         return sp.getBoolean("bold", false);
+    }
+
+    // ---- layout e estilo (v1.7)
+    /** 0 = lista vertical; 1 = barra horizontal (estilo GameHub). */
+    public int layout() {
+        return clamp(sp.getInt("layout", 0), 0, 1);
+    }
+
+    /** 0 = contínua com divisores; 1 = "chips" arredondados. */
+    public int barStyle() {
+        return clamp(sp.getInt("bar_style", 1), 0, 1);
+    }
+
+    /** 0 = esquerda, 1 = centro, 2 = direita (no topo da tela). */
+    public int anchor() {
+        return clamp(sp.getInt("anchor", 0), 0, 2);
+    }
+
+    public int barWidthPct() {
+        return clamp(sp.getInt("bar_width", 96), 40, 100);
+    }
+
+    public int padDp() {
+        return clamp(sp.getInt("pad_dp", 6), 0, 14);
+    }
+
+    public int textAlphaPct() {
+        return clamp(sp.getInt("text_alpha", 100), 30, 100);
+    }
+
+    /** 0 = monoespaçada, 1 = sans, 2 = condensada. */
+    public int font() {
+        return clamp(sp.getInt("font", 0), 0, 2);
+    }
+
+    public boolean shadow() {
+        return sp.getBoolean("shadow", true);
+    }
+
+    public boolean border() {
+        return sp.getBoolean("border", true);
+    }
+
+    public boolean ghz() {
+        return sp.getBoolean("ghz", false);
+    }
+
+    public boolean accentCustom() {
+        return sp.getBoolean("accent_on", false);
+    }
+
+    public int accentHue() {
+        return clamp(sp.getInt("accent_hue", 190), 0, 360);
+    }
+
+    /** Cor de destaque: a escolhida pelo matiz, ou a do tema. */
+    public int accentColor() {
+        if (accentCustom()) return android.graphics.Color.HSVToColor(new float[]{accentHue(), 0.70f, 1.0f});
+        int[] ac = THEME_ACCENT[theme()];
+        return android.graphics.Color.rgb(ac[0], ac[1], ac[2]);
+    }
+
+    // ---- guarda da GPU
+    public boolean guardOn() {
+        return sp.getBoolean("guard_on", true);
+    }
+
+    /** Acima dessa temperatura da GPU o guarda NÃO age (a proteção do kernel precisa valer). */
+    public int guardTemp() {
+        return clamp(sp.getInt("guard_temp", 88), 70, 95);
+    }
+
+    public boolean gpuPin() {
+        return sp.getBoolean("gpu_pin", false);
+    }
+
+    /** Perfis prontos de layout + métricas. 0 completo, 1 GameHub, 2 mínimo, 3 diagnóstico. */
+    public void applyPreset(int preset) {
+        SharedPreferences.Editor e = sp.edit();
+        for (String k : KEYS) e.putBoolean("m_" + k, false);
+        if (preset == 0) {
+            for (String k : KEYS) e.putBoolean("m_" + k, defaultFor(k));
+            e.putInt("layout", 0).putInt("anchor", 0).putInt("pos_x", 8).putInt("pos_y", 8);
+        } else if (preset == 1) {
+            for (String k : new String[]{"fps", "cpu", "cpufreq", "gpu", "gpustatus", "ram", "temp"}) e.putBoolean("m_" + k, true);
+            e.putInt("layout", 1).putInt("bar_style", 1).putInt("anchor", 1).putInt("pos_x", 0).putInt("pos_y", 4)
+                    .putInt("bar_width", 96).putInt("text_sp", 10).putInt("bg_pct", 55).putInt("radius_dp", 14);
+        } else if (preset == 2) {
+            for (String k : new String[]{"fps", "gpu", "gpustatus", "cpu", "ram"}) e.putBoolean("m_" + k, true);
+            e.putInt("layout", 1).putInt("bar_style", 1).putInt("anchor", 1).putInt("pos_x", 0).putInt("pos_y", 4)
+                    .putInt("bar_width", 96).putInt("text_sp", 10).putInt("bg_pct", 45).putInt("radius_dp", 14);
+        } else {
+            for (String k : KEYS) e.putBoolean("m_" + k, true);
+            e.putInt("layout", 0).putInt("anchor", 0).putInt("pos_x", 8).putInt("pos_y", 8);
+        }
+        e.apply();
     }
 
     // ---- comportamento

@@ -12,11 +12,26 @@ android {
         // targetSdk 29 de propósito: app sideload com root; evita as exigências novas
         // (tipo de foreground service, permissão de notificação) de targets mais altos.
         targetSdk 29
-        versionCode 7
-        versionName "1.6"
+        versionCode 8
+        versionName "1.7"
+    }
+
+    // Assinatura FIXA: cada build no GitHub Actions nasce numa máquina nova, que geraria uma chave de debug
+    // nova e o Android recusaria a atualização por cima ("conflito de assinatura"). Com este keystore (no repositório),
+    // todo APK tem a mesma assinatura e atualiza o app sem perder as configurações.
+    signingConfigs {
+        debug {
+            storeFile file("debug.keystore")
+            storePassword "android"
+            keyAlias "androiddebugkey"
+            keyPassword "android"
+        }
     }
 
     buildTypes {
+        debug {
+            signingConfig signingConfigs.debug
+        }
         release {
             minifyEnabled false
         }

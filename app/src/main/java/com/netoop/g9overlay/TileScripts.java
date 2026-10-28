@@ -159,4 +159,40 @@ public final class TileScripts {
             return -1;
         }
     }
+
+    /**
+     * Solta TUDO que costuma segurar a GPU, de uma vez (usado pelo "guarda da GPU"): nível térmico do kgsl,
+     * nível máximo de potência, teto do devfreq no máximo da tabela e governor padrão. Devolve uma linha "FREE ...".
+     */
+    public static String gpuFreeAll(String g) {
+        return "G=" + g + "; MAXF=$(tr ' ' '\\n' < $G/devfreq/available_frequencies | sort -n | tail -n 1); "
+                + "echo 0 > $G/thermal_pwrlevel; echo 0 > $G/max_pwrlevel; echo $MAXF > $G/devfreq/max_freq; "
+                + "echo msm-adreno-tz > $G/devfreq/governor; sleep 1; "
+                + "echo \"FREE cur=$(cat $G/devfreq/cur_freq) max=$(cat $G/devfreq/max_freq) tpl=$(cat $G/thermal_pwrlevel) "
+                + "maxlvl=$(cat $G/max_pwrlevel)\"";
+    }
+
+    public static String gpuFreeAll() {
+        return gpuFreeAll(KGSL);
+    }
+
+    /**
+     * Fixa o piso da GPU no máximo (on=true) guardando o piso original em /data/adb/g9overlay_gpu_min, ou
+     * restaura o piso original (on=false). Nunca grava como "original" um valor que já seja o máximo.
+     */
+    public static String gpuPin(String g, boolean on, String stateFile) {
+        String head = "G=" + g + "; F=" + stateFile + "; ";
+        if (on) {
+            return head + "MAXF=$(tr ' ' '\\n' < $G/devfreq/available_frequencies | sort -n | tail -n 1); "
+                    + "MINT=$(tr ' ' '\\n' < $G/devfreq/available_frequencies | sort -n | head -n 1); "
+                    + "if [ ! -f $F ]; then V=$(cat $G/devfreq/min_freq); [ \"$V\" = \"$MAXF\" ] && V=$MINT; echo $V > $F; fi; "
+                    + "echo $MAXF > $G/devfreq/min_freq; echo \"PIN min=$(cat $G/devfreq/min_freq)\"";
+        }
+        return head + "if [ -f $F ]; then cat $F > $G/devfreq/min_freq; rm -f $F; fi; "
+                + "echo \"UNPIN min=$(cat $G/devfreq/min_freq)\"";
+    }
+
+    public static String gpuPin(boolean on) {
+        return gpuPin(KGSL, on, "/data/adb/g9overlay_gpu_min");
+    }
 }

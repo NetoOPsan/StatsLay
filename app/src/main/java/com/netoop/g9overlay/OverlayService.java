@@ -19,7 +19,9 @@ import android.os.IBinder;
 import android.os.Looper;
 import android.os.SystemClock;
 import android.provider.Settings;
+import android.text.SpannableStringBuilder;
 import android.text.SpannableString;
+import android.text.style.RelativeSizeSpan;
 import android.text.Spanned;
 import android.text.style.ForegroundColorSpan;
 import android.text.style.StyleSpan;
@@ -77,6 +79,10 @@ public class OverlayService extends Service {
     private LinearLayout panel;    // painel de configuração rápida
     private final List<TextView> lineViews = new ArrayList<TextView>();
     private List<Collector.Line> lastLines = null;
+    private List<Segs.Seg> lastSegs = null;
+    private final GpuGuard guard = new GpuGuard();
+    private volatile boolean pinApplied = false;
+    private int lastAnchor = -1;
 
     // guardamos o listener num campo: o Android só mantém referência fraca
     private SharedPreferences.OnSharedPreferenceChangeListener prefListener;
@@ -133,6 +139,15 @@ public class OverlayService extends Service {
         running = false;
         RUNNING = false;
         pokeTile();
+        if (pinApplied) {
+            pinApplied = false;
+            new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    Root.run(TileScripts.gpuPin(false), 15);
+                }
+            }).start();
+        }
         fastShell.close();
         slowShell.close();
         if (prefs != null && prefListener != null) prefs.unregisterListener(prefListener);
@@ -187,7 +202,8 @@ public class OverlayService extends Service {
                 WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
                 BASE_FLAGS,
                 PixelFormat.TRANSLUCENT);
-        lp.gravity = Gravity.TOP | Gravity.START;
+        lp.gravity = gravityFor(prefs.anchor());
+        lastAnchor = prefs.anchor();
         lp.x = prefs.posX();
         lp.y = prefs.posY();
 
@@ -221,7 +237,7 @@ public class OverlayService extends Service {
                         float dx = e.getRawX() - downX, dy = e.getRawY() - downY;
                         if (!moved && (Math.abs(dx) > slop || Math.abs(dy) > slop)) moved = true;
                         if (moved) {
-                            lp.x = startX + (int) dx;
+                            lp.x = startX + (prefs.anchor() == 2 ? -1 : 1) * (int) dx;
                             lp.y = startY + (int) dy;
                             wm.updateViewLayout(root, lp);
                         }
@@ -240,29 +256,49 @@ public class OverlayService extends Service {
         applyStyle();
     }
 
-    /** Aplica aparência (cores, opacidade, bordas, tamanho, toque) a partir das configurações. */
+    private static int gravityFor(int anchor) {
+        int h = anchor == 1 ? Gravity.CENTER_HORIZONTAL : (anchor == 2 ? Gravity.END : Gravity.START);
+        return Gravity.TOP | h;
+    }
+
+    /** Aplica aparência (cores, opacidade, bordas, espaçamento, âncora, toque) a partir das configurações. */
     private void applyStyle() {
         if (root == null || prefs == null) return;
         int a = Math.round(prefs.bgPercent() * 2.55f);
         int[] bg = Prefs.THEME_BG[prefs.theme()];
-        int[] ac = Prefs.THEME_ACCENT[prefs.theme()];
+        int accent = prefs.accentColor();
         GradientDrawable g = new GradientDrawable();
         g.setColor(Color.argb(a, bg[0], bg[1], bg[2]));
         g.setCornerRadius(dp(prefs.radiusDp()));
-        if (a > 25) g.setStroke(dp(1), Color.argb(Math.min(110, a), ac[0], ac[1], ac[2]));
+        if (prefs.border() && a > 25) {
+            g.setStroke(dp(1), Color.argb(Math.min(120, a), Color.red(accent), Color.green(accent), Color.blue(accent)));
+        }
         root.setBackground(g);
-        root.setPadding(dp(7), dp(5), dp(7), dp(5));
+        int pad = dp(prefs.padDp());
+        root.setPadding(pad + dp(1), pad - dp(1) < 0 ? 0 : pad - dp(1), pad + dp(1), pad - dp(1) < 0 ? 0 : pad - dp(1));
 
+        boolean changed = false;
+        int an = prefs.anchor();
+        if (an != lastAnchor) {                     // trocou a âncora: aplica a posição salva
+            lastAnchor = an;
+            lp.gravity = gravityFor(an);
+            lp.x = prefs.posX();
+            lp.y = prefs.posY();
+            changed = true;
+        }
         boolean ct = prefs.clickThrough();
         int f = BASE_FLAGS | (ct ? WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE : 0);
         if (lp.flags != f) {
             lp.flags = f;
+            changed = true;
+        }
+        if (changed) {
             try {
                 wm.updateViewLayout(root, lp);
             } catch (Exception ignored) {
             }
         }
-        if (lastLines != null) render(lastLines);
+        renderAll();
     }
 
     private void togglePanel() {
@@ -467,6 +503,10 @@ public class OverlayService extends Service {
         while (running) {
             long t0 = SystemClock.elapsedRealtime();
             Set<String> en = prefs.enabledSet();
+            if (prefs.guardOn()) {          // o guarda precisa ler a GPU e a temperatura mesmo com essas linhas desligadas
+                en.add("gpudata");
+                en.add("tempdata");
+            }
             String setStr = new TreeSet<String>(en).toString();
             if (!setStr.equals(lastSet)) {
                 lastSet = setStr;
@@ -540,12 +580,24 @@ public class OverlayService extends Service {
             }
             for (String note : col.drainNotes()) AppLog.log("rapido", note);
 
+            // guarda da GPU: solta a GPU sozinho quando ela está limitada/presa (com limite de temperatura)
+            try {
+                GpuHealth.Result gh = col.lastGpuHealth();
+                GpuBlackBox.Sample gs2 = col.lastGpuSample();
+                if (gh != null && gs2 != null && prefs.guardOn()) runGuard(gh, gs2);
+                maintainPin();
+            } catch (Exception e) {
+                AppLog.log("guarda", "ERRO: " + e);
+            }
+
             final List<Collector.Line> toShow = lines;
+            final List<Segs.Seg> toSegs = Segs.build(lines, prefs.ghz(), col.lastGpuHealth());
             ui.post(new Runnable() {
                 @Override
                 public void run() {
                     lastLines = toShow;
-                    render(toShow);
+                    lastSegs = toSegs;
+                    renderAll();
                 }
             });
 
@@ -620,6 +672,51 @@ public class OverlayService extends Service {
         slowShell.close();
     }
 
+    // ------------------------------------------------------------ guarda da GPU e fixação do piso
+
+    private void runGuard(final GpuHealth.Result gh, GpuBlackBox.Sample gs) {
+        long now = System.currentTimeMillis();
+        GpuGuard.Decision d = guard.decide(gh, gs.gpuTemp, now, prefs.guardTemp());
+        switch (d) {
+            case ACT:
+                AppLog.log("guarda", "GPU " + gh.text + " (temp " + gs.gpuTemp + "): tentando soltar");
+                new Thread(new Runnable() {
+                    @Override
+                    public void run() {
+                        String out = Root.run(TileScripts.gpuFreeAll(), 20);
+                        AppLog.log("guarda", "resultado: " + out.replace('\n', ' '));
+                    }
+                }, "g9ov-guard").start();
+                break;
+            case HOT_PAUSE:
+                AppLog.log("guarda", "GPU " + gh.text + " mas a " + gs.gpuTemp + " °C (limite " + prefs.guardTemp()
+                        + "): NÃO mexo, deixo a proteção do kernel agir");
+                break;
+            case NO_TEMP:
+                AppLog.log("guarda", "sem leitura da temperatura da GPU: o guarda não age por segurança");
+                break;
+            case GAVE_UP:
+                AppLog.log("guarda", "3 tentativas sem sucesso: pausando o guarda por 10 min (algo mais forte limita a GPU)");
+                break;
+            default:
+                break;
+        }
+    }
+
+    /** Liga/desliga a fixação do piso da GPU conforme a configuração (só enquanto o overlay roda). */
+    private void maintainPin() {
+        final boolean want = prefs.gpuPin();
+        if (want == pinApplied) return;
+        pinApplied = want;
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                String out = Root.run(TileScripts.gpuPin(want), 15);
+                AppLog.log("guarda", "piso da GPU " + (want ? "fixado" : "restaurado") + ": " + out.replace('\n', ' '));
+            }
+        }, "g9ov-pin").start();
+    }
+
     private void sleepQuiet(long ms) {
         try {
             Thread.sleep(ms);
@@ -654,17 +751,48 @@ public class OverlayService extends Service {
 
     // ------------------------------------------------------------ desenho das linhas
 
+    /** Escolhe o desenho conforme o layout: barra horizontal (se houver segmentos) ou lista vertical. */
+    private void renderAll() {
+        if (lastLines == null) return;
+        if (prefs.layout() == 1 && lastSegs != null && !lastSegs.isEmpty()) renderBar(lastSegs);
+        else render(lastLines);
+    }
+
+    private Typeface fontFace(boolean bold) {
+        int style = bold ? Typeface.BOLD : Typeface.NORMAL;
+        switch (prefs.font()) {
+            case 1:
+                return Typeface.create("sans-serif-medium", style);
+            case 2:
+                return Typeface.create("sans-serif-condensed", style);
+            default:
+                return Typeface.create(Typeface.MONOSPACE, style);
+        }
+    }
+
+    private int withAlpha(int color) {
+        return Color.argb(Math.round(prefs.textAlphaPct() * 2.55f), Color.red(color), Color.green(color), Color.blue(color));
+    }
+
+    private void styleText(TextView t) {
+        t.setSingleLine(true);
+        if (prefs.shadow()) t.setShadowLayer(2f, 0f, 0f, Color.BLACK);
+        else t.setShadowLayer(0f, 0f, 0f, Color.TRANSPARENT);
+    }
+
     private void render(List<Collector.Line> lines) {
-        int[] ac = Prefs.THEME_ACCENT[prefs.theme()];
-        int accent = Color.rgb(ac[0], ac[1], ac[2]);
+        int accent = withAlpha(prefs.accentColor());
         boolean colorize = prefs.colorize();
         boolean bold = prefs.bold();
         int size = prefs.textSp();
 
+        if (box.getChildCount() != lineViews.size()) {   // veio da barra: recomeça
+            box.removeAllViews();
+            lineViews.clear();
+        }
+        box.setOrientation(LinearLayout.VERTICAL);
         while (lineViews.size() < lines.size()) {
             TextView t = new TextView(this);
-            t.setSingleLine(true);
-            t.setShadowLayer(2f, 0f, 0f, Color.BLACK);
             box.addView(t);
             lineViews.add(t);
         }
@@ -675,8 +803,9 @@ public class OverlayService extends Service {
         for (int i = 0; i < lines.size(); i++) {
             Collector.Line l = lines.get(i);
             TextView t = lineViews.get(i);
+            styleText(t);
             t.setTextSize(TypedValue.COMPLEX_UNIT_SP, size);
-            t.setTypeface(Typeface.MONOSPACE, bold ? Typeface.BOLD : Typeface.NORMAL);
+            t.setTypeface(fontFace(bold));
 
             // rótulo (primeira palavra) na cor de destaque; resto na cor do nível
             String text = l.text;
@@ -686,11 +815,86 @@ public class OverlayService extends Service {
             sp.setSpan(new ForegroundColorSpan(accent), 0, cut, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
             sp.setSpan(new StyleSpan(Typeface.BOLD), 0, cut, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
             if (cut < text.length()) {
-                int c = colorize ? colorFor(l.level) : Color.WHITE;
+                int c = colorize || l.level == 4 ? withAlpha(colorFor(l.level)) : withAlpha(Color.WHITE);
                 sp.setSpan(new ForegroundColorSpan(c), cut, text.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
             }
             t.setText(sp);
         }
+    }
+
+    /** Layout em barra horizontal (estilo GameHub): chips com rótulo + valor, quebrando em mais linhas se faltar largura. */
+    private void renderBar(List<Segs.Seg> segs) {
+        int accent = prefs.accentColor();
+        int accentText = withAlpha(accent);
+        boolean colorize = prefs.colorize();
+        boolean chips = prefs.barStyle() == 1;
+        int size = prefs.textSp();
+        int pad = dp(prefs.padDp());
+        lineViews.clear();
+        box.removeAllViews();
+        box.setOrientation(LinearLayout.VERTICAL);
+
+        int maxW = Math.round(getResources().getDisplayMetrics().widthPixels * prefs.barWidthPct() / 100f) - 2 * pad - dp(4);
+        LinearLayout row = newRow();
+        box.addView(row);
+        int rowW = 0;
+        for (Segs.Seg s : segs) {
+            TextView t = new TextView(this);
+            styleText(t);
+            t.setTextSize(TypedValue.COMPLEX_UNIT_SP, size);
+            t.setTypeface(fontFace(prefs.bold()));
+            SpannableStringBuilder b = new SpannableStringBuilder();
+            if (s.dot >= 0) {
+                int st = b.length();
+                b.append("● ");
+                b.setSpan(new ForegroundColorSpan(colorFor(s.dot)), st, st + 1, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+            }
+            int ls = b.length();
+            b.append(s.label);
+            b.setSpan(new ForegroundColorSpan(accentText), ls, b.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+            b.setSpan(new StyleSpan(Typeface.BOLD), ls, b.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+            b.setSpan(new RelativeSizeSpan(0.82f), ls, b.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+            b.append(' ');
+            int vs = b.length();
+            b.append(s.value);
+            int vc = colorize ? colorFor(s.level) : Color.WHITE;
+            b.setSpan(new ForegroundColorSpan(withAlpha(vc)), vs, b.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+            t.setText(b);
+            if (chips) {
+                GradientDrawable cg = new GradientDrawable();
+                cg.setColor(Color.argb(46, Color.red(accent), Color.green(accent), Color.blue(accent)));
+                cg.setCornerRadius(dp(8));
+                t.setBackground(cg);
+                t.setPadding(dp(7), dp(2), dp(7), dp(2));
+            }
+            LinearLayout.LayoutParams lpC = new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+            lpC.setMargins(dp(chips ? 2 : 4), dp(1), dp(chips ? 2 : 4), dp(1));
+            t.setLayoutParams(lpC);
+            t.measure(View.MeasureSpec.UNSPECIFIED, View.MeasureSpec.UNSPECIFIED);
+            int w = t.getMeasuredWidth() + dp(chips ? 4 : 9);
+            if (rowW + w > maxW && row.getChildCount() > 0) {
+                row = newRow();
+                box.addView(row);
+                rowW = 0;
+            }
+            if (!chips && row.getChildCount() > 0) {
+                View div = new View(this);
+                div.setBackgroundColor(Color.argb(70, 255, 255, 255));
+                LinearLayout.LayoutParams dl = new LinearLayout.LayoutParams(dp(1), dp(Math.max(10, size + 2)));
+                dl.gravity = Gravity.CENTER_VERTICAL;
+                row.addView(div, dl);
+            }
+            row.addView(t);
+            rowW += w;
+        }
+    }
+
+    private LinearLayout newRow() {
+        LinearLayout r = new LinearLayout(this);
+        r.setOrientation(LinearLayout.HORIZONTAL);
+        r.setGravity(Gravity.CENTER_VERTICAL);
+        return r;
     }
 
     private static int colorFor(int level) {
@@ -701,6 +905,8 @@ public class OverlayService extends Service {
                 return Color.rgb(255, 82, 82);    // crítico: vermelho
             case 3:
                 return Color.rgb(160, 160, 160);  // informativo: cinza
+            case 4:
+                return Color.rgb(80, 220, 130);   // tudo certo: verde
             default:
                 return Color.WHITE;
         }

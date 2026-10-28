@@ -68,7 +68,7 @@ public class Collector {
 
     // ------------------------------------------------------------------ comando
 
-    public static final String VERSION = "1.6";
+    public static final String VERSION = "1.7";
 
     /** Acrescenta a leitura de um arquivo (função g9r do shell), a menos que ele esteja na lista de travados. */
     private void rd(StringBuilder c, String path) {
@@ -82,6 +82,13 @@ public class Collector {
     // valores calculados no último parse (alimentam a caixa-preta da GPU)
     private int lastGpuTemp = -1, lastCpuTemp = -1, lastCpuPct = -1, lastGoldPct = -1, lastBusy = -1;
     private GpuBlackBox.Sample lastSample = null;
+    private final GpuHealth health = new GpuHealth();
+    private GpuHealth.Result lastHealth = null;
+
+    /** Estado da GPU do último ciclo (null se nenhuma métrica de GPU está ligada). */
+    public GpuHealth.Result lastGpuHealth() {
+        return lastHealth;
+    }
 
     /** Amostra da GPU do último parse (ou null se a métrica GPU estiver desligada). */
     public GpuBlackBox.Sample lastGpuSample() {
@@ -115,7 +122,7 @@ public class Collector {
             rd(c, "/sys/block/zram0/stat"); // E/S só do ZRAM (setores de 512 B); disco = total - ZRAM
         }
         if (has("psi")) rd(c, "/proc/pressure/memory");
-        if (has("gpu")) {
+        if (has("gpu") || has("gpustatus") || has("gpudata")) {
             rd(c, GPU + "devfreq/cur_freq");
             rd(c, GPU + "gpu_busy_percentage");
             rd(c, GPU + "gpubusy");
@@ -129,12 +136,12 @@ public class Collector {
             rd(c, GPU + "min_pwrlevel");
             rd(c, GPU + "max_pwrlevel");
         }
-        if (has("temp") && !bad.contains("ZONES")) {
+        if ((has("temp") || has("tempdata")) && !bad.contains("ZONES")) {
             // Descobre quais "zonas térmicas" existem (1ª vez e a cada ~60 ciclos).
             if (zoneTypes.isEmpty() || tick % 60 == 1) rd(c, "/sys/class/thermal/thermal_zone*/type");
             for (int z : tempZones) rd(c, "/sys/class/thermal/thermal_zone" + z + "/temp");
         }
-        if (has("bat") || has("temp")) rd(c, BAT + "temp");
+        if (has("bat") || has("temp") || has("tempdata")) rd(c, BAT + "temp");
         if (has("bat")) {
             rd(c, BAT + "capacity");
             rd(c, BAT + "current_now");
@@ -211,7 +218,7 @@ public class Collector {
         }
         lastGpuTemp = lastCpuTemp = lastCpuPct = lastGoldPct = lastBusy = -1;
         lastSample = null;
-        if (has("temp")) chooseZones();
+        if (has("temp") || has("tempdata")) chooseZones();
 
         if (firstParse) {
             firstParse = false;
@@ -369,13 +376,16 @@ public class Collector {
         }
 
         // ---- GPU
+        int gpuPos = res.size();
         if (has("gpu")) res.add(gpuLine(sec));
+        else if (has("gpustatus") || has("gpudata")) gpuLine(sec); // só atualiza a ocupação (estado/guarda da GPU)
 
         // ---- Limites (throttling)
         if (has("limit")) res.add(limitLine(sec));
 
         // ---- Temperaturas
         if (has("temp")) res.add(tempLine(sec));
+        else if (has("tempdata")) tempLine(sec); // só atualiza a temperatura (usada pelo guarda da GPU)
 
         // ---- Bateria
         if (has("bat")) res.add(batLine(sec));
@@ -409,7 +419,17 @@ public class Collector {
             res.add(new Line(String.format(Locale.US, "OVL  %d MB  %.1f%% cpu", selfRssKb / 1024, selfCpuPct), 3));
         }
 
-        if (has("gpu")) lastSample = buildSample(sec, nowMs, probe == null ? -1 : probe.fps);
+        if (has("gpu") || has("gpustatus") || has("gpudata")) {
+            lastSample = buildSample(sec, nowMs, probe == null ? -1 : probe.fps);
+            lastHealth = health.update(lastSample);
+            if (has("gpustatus")) {
+                int lv = lastHealth.level == 0 ? 4 : lastHealth.level; // 4 = verde ("tudo certo")
+                int at = Math.min(res.size(), gpuPos + (has("gpu") ? 1 : 0));
+                res.add(at, new Line("GPU  ● " + lastHealth.text, lv));
+            }
+        } else {
+            lastHealth = null;
+        }
 
         if (res.isEmpty()) res.add(new Line("(nenhuma métrica ligada)", 3));
         return res;
