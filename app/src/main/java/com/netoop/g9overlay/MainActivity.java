@@ -21,6 +21,7 @@ import android.widget.Button;
 import android.widget.CompoundButton;
 import android.widget.FrameLayout;
 import android.widget.HorizontalScrollView;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.SeekBar;
@@ -163,6 +164,15 @@ public class MainActivity extends Activity {
         LinearLayout topRow = new LinearLayout(this);
         topRow.setOrientation(LinearLayout.HORIZONTAL);
         topRow.setGravity(Gravity.CENTER_VERTICAL);
+
+        // Ícone / Logo do app no cabeçalho
+        ImageView logoView = new ImageView(this);
+        logoView.setImageResource(R.drawable.ic_launcher);
+        int iconSize = dp(44);
+        LinearLayout.LayoutParams ilp = new LinearLayout.LayoutParams(iconSize, iconSize);
+        ilp.setMargins(0, 0, dp(12), 0);
+        logoView.setLayoutParams(ilp);
+        topRow.addView(logoView);
 
         LinearLayout titles = new LinearLayout(this);
         titles.setOrientation(LinearLayout.VERTICAL);
