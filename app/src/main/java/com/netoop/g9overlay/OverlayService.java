@@ -303,20 +303,80 @@ public class OverlayService extends Service {
 
     private void togglePanel() {
         boolean show = panel.getVisibility() != View.VISIBLE;
+        if (show && prefs.hapticPanel()) {
+            try {
+                android.os.Vibrator vib = (android.os.Vibrator) getSystemService(VIBRATOR_SERVICE);
+                if (vib != null && vib.hasVibrator()) {
+                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                        vib.vibrate(android.os.VibrationEffect.createOneShot(30,
+                                android.os.VibrationEffect.DEFAULT_AMPLITUDE));
+                    } else {
+                        vib.vibrate(30);
+                    }
+                }
+            } catch (Exception ignored) {}
+        }
         panel.setVisibility(show ? View.VISIBLE : View.GONE);
         box.setVisibility(show ? View.GONE : View.VISIBLE);
     }
 
     private LinearLayout buildPanel() {
+        int accent = prefs.accentColor();
+        int panelBg = prefs.panelBg() == 1
+                ? Color.argb(230, 8, 10, 16)
+                : Color.argb(220,
+                    Prefs.THEME_BG[prefs.theme()][0],
+                    Prefs.THEME_BG[prefs.theme()][1],
+                    Prefs.THEME_BG[prefs.theme()][2]);
+
         LinearLayout p = new LinearLayout(this);
         p.setOrientation(LinearLayout.VERTICAL);
+        GradientDrawable pbg = new GradientDrawable();
+        pbg.setColor(panelBg);
+        pbg.setCornerRadius(dp(16));
+        pbg.setStroke(dp(1), Color.argb(80,
+                Color.red(accent), Color.green(accent), Color.blue(accent)));
+        p.setBackground(pbg);
+        int pp = dp(12);
+        p.setPadding(pp, pp, pp, pp);
+
+        // ── Cabeçalho do painel ──
+        LinearLayout header = new LinearLayout(this);
+        header.setOrientation(LinearLayout.HORIZONTAL);
+        header.setGravity(Gravity.CENTER_VERTICAL);
+        header.setPadding(0, 0, 0, dp(8));
 
         TextView title = new TextView(this);
-        title.setText("Métricas");
-        title.setTextColor(Color.WHITE);
+        title.setText("G9 Overlay");
+        title.setTextColor(accent);
         title.setTypeface(Typeface.DEFAULT_BOLD);
-        title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
-        p.addView(title);
+        title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+        title.setLetterSpacing(0.08f);
+        header.addView(title, new LinearLayout.LayoutParams(0,
+                LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+
+        // Botão fechar (X) no canto
+        Button closeBtn = panelIconBtn("✕", accent, new View.OnClickListener() {
+            @Override public void onClick(View v) { togglePanel(); }
+        });
+        header.addView(closeBtn);
+        p.addView(header);
+
+        // Divider
+        View div0 = new View(this);
+        div0.setBackgroundColor(Color.argb(50, 255, 255, 255));
+        p.addView(div0, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(1)));
+
+        // ── Métricas em grid compacto de 2 colunas ──
+        TextView metTitle = new TextView(this);
+        metTitle.setText("MÉTRICAS");
+        metTitle.setTextColor(Color.argb(140, Color.red(accent), Color.green(accent), Color.blue(accent)));
+        metTitle.setTypeface(Typeface.DEFAULT_BOLD);
+        metTitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 9);
+        metTitle.setLetterSpacing(0.12f);
+        metTitle.setPadding(0, dp(8), 0, dp(4));
+        p.addView(metTitle);
 
         for (int i = 0; i < Prefs.KEYS.length; i += 2) {
             LinearLayout row = new LinearLayout(this);
@@ -325,75 +385,83 @@ public class OverlayService extends Service {
                 final String key = Prefs.KEYS[j];
                 CheckBox cb = new CheckBox(this);
                 cb.setText(Prefs.LABELS[j]);
-                cb.setTextColor(Color.WHITE);
+                cb.setTextColor(Color.rgb(200, 210, 225));
                 cb.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
                 cb.setChecked(prefs.on(key));
-                cb.setPadding(0, 0, dp(6), 0);
+                cb.setPadding(0, dp(1), dp(6), dp(1));
                 cb.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
                     @Override
                     public void onCheckedChanged(CompoundButton b, boolean checked) {
                         prefs.set(key, checked);
                     }
                 });
-                row.addView(cb, new LinearLayout.LayoutParams(dp(155), LinearLayout.LayoutParams.WRAP_CONTENT));
+                row.addView(cb, new LinearLayout.LayoutParams(dp(148), LinearLayout.LayoutParams.WRAP_CONTENT));
             }
             p.addView(row);
         }
 
+        // ── Controles de aparência rápidos ──
+        View div1 = new View(this);
+        div1.setBackgroundColor(Color.argb(50, 255, 255, 255));
+        LinearLayout.LayoutParams d1lp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(1));
+        d1lp.setMargins(0, dp(8), 0, dp(8));
+        p.addView(div1, d1lp);
+
+        TextView quickTitle = new TextView(this);
+        quickTitle.setText("APARÊNCIA RÁPIDA");
+        quickTitle.setTextColor(Color.argb(140, Color.red(accent), Color.green(accent), Color.blue(accent)));
+        quickTitle.setTypeface(Typeface.DEFAULT_BOLD);
+        quickTitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 9);
+        quickTitle.setLetterSpacing(0.12f);
+        quickTitle.setPadding(0, 0, 0, dp(4));
+        p.addView(quickTitle);
+
         LinearLayout b1 = new LinearLayout(this);
         b1.setOrientation(LinearLayout.HORIZONTAL);
-        b1.addView(smallButton("A-", new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                prefs.setTextSp(prefs.textSp() - 1);
-            }
+        LinearLayout.LayoutParams b1lp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        b1lp.setMargins(0, 0, 0, dp(4));
+        b1.setLayoutParams(b1lp);
+
+        b1.addView(panelChipBtn("A−", accent, new View.OnClickListener() {
+            @Override public void onClick(View v) { prefs.setTextSp(prefs.textSp() - 1); }
         }));
-        b1.addView(smallButton("A+", new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                prefs.setTextSp(prefs.textSp() + 1);
-            }
+        b1.addView(panelChipBtn("A+", accent, new View.OnClickListener() {
+            @Override public void onClick(View v) { prefs.setTextSp(prefs.textSp() + 1); }
         }));
-        b1.addView(smallButton("Fundo-", new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
+        b1.addView(panelChipBtn("Fundo−", accent, new View.OnClickListener() {
+            @Override public void onClick(View v) {
                 prefs.setInt("bg_pct", Math.max(0, prefs.bgPercent() - 10));
             }
         }));
-        b1.addView(smallButton("Fundo+", new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
+        b1.addView(panelChipBtn("Fundo+", accent, new View.OnClickListener() {
+            @Override public void onClick(View v) {
                 prefs.setInt("bg_pct", Math.min(100, prefs.bgPercent() + 10));
             }
         }));
         p.addView(b1);
-        LinearLayout b2 = new LinearLayout(this);
-        b2.setOrientation(LinearLayout.HORIZONTAL);
-        b2.addView(smallButton("Fechar", new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                togglePanel();
-            }
-        }));
-        b2.addView(smallButton("Config.", new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                Intent i = new Intent(OverlayService.this, MainActivity.class);
-                i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                startActivity(i);
-            }
-        }));
-        LinearLayout b3 = new LinearLayout(this);
-        b3.setOrientation(LinearLayout.HORIZONTAL);
-        b3.addView(smallButton("Gravar GPU", new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
+
+        // ── Ações GPU ──
+        View div2 = new View(this);
+        div2.setBackgroundColor(Color.argb(50, 255, 255, 255));
+        LinearLayout.LayoutParams d2lp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(1));
+        d2lp.setMargins(0, dp(4), 0, dp(8));
+        p.addView(div2, d2lp);
+
+        LinearLayout gpuRow = new LinearLayout(this);
+        gpuRow.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout.LayoutParams glp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        glp.setMargins(0, 0, 0, dp(4));
+        gpuRow.setLayoutParams(glp);
+        gpuRow.addView(panelChipBtn("Gravar GPU", accent, new View.OnClickListener() {
+            @Override public void onClick(View v) {
                 GpuTools.record(OverlayService.this, "painel do overlay", new GpuTools.Callback() {
-                    @Override
-                    public void onResult(final String summary) {
+                    @Override public void onResult(final String summary) {
                         ui.post(new Runnable() {
-                            @Override
-                            public void run() {
+                            @Override public void run() {
                                 Toast.makeText(OverlayService.this, summary, Toast.LENGTH_SHORT).show();
                             }
                         });
@@ -401,16 +469,13 @@ public class OverlayService extends Service {
                 });
             }
         }));
-        b3.addView(smallButton("Destravar GPU", new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
+        gpuRow.addView(panelChipBtn("Destravar GPU", accent, new View.OnClickListener() {
+            @Override public void onClick(View v) {
                 Toast.makeText(OverlayService.this, "Tentando soltar a GPU...", Toast.LENGTH_SHORT).show();
                 GpuTools.unstick(OverlayService.this, new GpuTools.Callback() {
-                    @Override
-                    public void onResult(final String summary) {
+                    @Override public void onResult(final String summary) {
                         ui.post(new Runnable() {
-                            @Override
-                            public void run() {
+                            @Override public void run() {
                                 Toast.makeText(OverlayService.this, summary, Toast.LENGTH_LONG).show();
                             }
                         });
@@ -418,30 +483,79 @@ public class OverlayService extends Service {
                 });
             }
         }));
-        p.addView(b3);
-        b2.addView(smallButton("Parar", new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
+        p.addView(gpuRow);
+
+        // ── Navegação: Config / Parar ──
+        LinearLayout navRow = new LinearLayout(this);
+        navRow.setOrientation(LinearLayout.HORIZONTAL);
+        navRow.addView(panelChipBtn("⚙ Config.", accent, new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                Intent i = new Intent(OverlayService.this, MainActivity.class);
+                i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                startActivity(i);
+            }
+        }));
+        navRow.addView(panelChipBtn("⏹ Parar overlay", Color.rgb(252, 100, 100), new View.OnClickListener() {
+            @Override public void onClick(View v) {
                 AppLog.log("svc", "parar (painel)");
                 stopSelf();
             }
         }));
-        p.addView(b2);
+        p.addView(navRow);
+
         return p;
     }
 
-    private Button smallButton(String label, View.OnClickListener l) {
+    /** Botão chip para o painel do overlay (estilo discreto com a cor de destaque). */
+    private Button panelChipBtn(String label, int accent, View.OnClickListener l) {
         Button b = new Button(this);
         b.setText(label);
         b.setAllCaps(false);
+        b.setTypeface(Typeface.DEFAULT_BOLD);
         b.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
-        b.setMinWidth(0);
-        b.setMinimumWidth(0);
-        b.setMinHeight(dp(34));
-        b.setMinimumHeight(dp(34));
-        b.setPadding(dp(8), 0, dp(8), 0);
+        b.setMinWidth(0); b.setMinimumWidth(0);
+        b.setMinHeight(dp(34)); b.setMinimumHeight(dp(34));
+        b.setStateListAnimator(null);
+        int bg = Color.argb(35, Color.red(accent), Color.green(accent), Color.blue(accent));
+        int stroke = Color.argb(70, Color.red(accent), Color.green(accent), Color.blue(accent));
+        GradientDrawable gd = new GradientDrawable();
+        gd.setColor(bg);
+        gd.setCornerRadius(dp(10));
+        gd.setStroke(dp(1), stroke);
+        b.setBackground(gd);
+        b.setTextColor(accent);
+        b.setPadding(dp(10), dp(4), dp(10), dp(4));
+        b.setOnClickListener(l);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0,
+                LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
+        lp.setMargins(dp(2), dp(2), dp(2), dp(2));
+        b.setLayoutParams(lp);
+        return b;
+    }
+
+    /** Botão ícone pequeno (ex.: fechar painel). */
+    private Button panelIconBtn(String label, int accent, View.OnClickListener l) {
+        Button b = new Button(this);
+        b.setText(label);
+        b.setAllCaps(false);
+        b.setTypeface(Typeface.DEFAULT_BOLD);
+        b.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+        b.setMinWidth(0); b.setMinimumWidth(0);
+        b.setMinHeight(dp(32)); b.setMinimumHeight(dp(32));
+        b.setStateListAnimator(null);
+        GradientDrawable gd = new GradientDrawable();
+        gd.setColor(Color.argb(30, Color.red(accent), Color.green(accent), Color.blue(accent)));
+        gd.setCornerRadius(dp(12));
+        b.setBackground(gd);
+        b.setTextColor(Color.argb(180, Color.red(accent), Color.green(accent), Color.blue(accent)));
+        int pp = dp(10);
+        b.setPadding(pp, dp(4), pp, dp(4));
         b.setOnClickListener(l);
         return b;
+    }
+
+    private Button smallButton(String label, View.OnClickListener l) {
+        return panelChipBtn(label, prefs.accentColor(), l);
     }
 
     // ------------------------------------------------------------ threads

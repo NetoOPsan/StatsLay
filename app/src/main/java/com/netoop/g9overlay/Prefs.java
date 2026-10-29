@@ -34,10 +34,30 @@ public final class Prefs {
             {"Sistema", "temp", "bat", "app", "self"}
     };
 
-    public static final String[] THEME_NAMES = {"Escuro", "Azul", "Verde", "Roxo"};
-    // fundo (r,g,b) e cor de destaque (r,g,b) de cada tema
-    public static final int[][] THEME_BG = {{0, 0, 0}, {8, 20, 48}, {5, 28, 16}, {28, 12, 46}};
-    public static final int[][] THEME_ACCENT = {{34, 211, 238}, {125, 170, 255}, {94, 234, 160}, {196, 150, 255}};
+    // ── Temas ─────────────────────────────────────────────────────────────────
+    public static final String[] THEME_NAMES = {"Cósmico", "Oceano", "Floresta", "Aurora", "Entardecer", "Carvão"};
+    // fundo (r,g,b): mais escuro e saturado que v1.7
+    public static final int[][] THEME_BG = {
+            {8,  10, 18},   // Cósmico  (azul profundo)
+            {6,  18, 32},   // Oceano
+            {5,  20, 12},   // Floresta
+            {18, 8,  26},   // Aurora   (roxo)
+            {26, 14, 6},    // Entardecer (laranja escuro)
+            {12, 12, 12}    // Carvão   (neutro)
+    };
+    // cor de destaque (r,g,b)
+    public static final int[][] THEME_ACCENT = {
+            {99,  179, 237},  // azul-céu
+            {56,  189, 248},  // ciano claro
+            {74,  222, 128},  // verde esmeralda
+            {192, 132, 252},  // violeta
+            {251, 146, 60},   // laranja
+            {148, 163, 184}   // cinza-gelo
+    };
+
+    // ── Estilos de overlay ────────────────────────────────────────────────────
+    /** Estilos visuais do overlay (além de lista/barra já existentes). */
+    public static final String[] OVERLAY_STYLE_NAMES = {"Padrão", "Minimalista", "Glassmorphism", "Neon"};
 
     private final SharedPreferences sp;
 
@@ -56,7 +76,6 @@ public final class Prefs {
     }
 
     private static boolean defaultFor(String k) {
-        // Ligadas por padrão: tudo, menos bateria, FPS e custo do overlay.
         return !(k.equals("bat") || k.equals("fps") || k.equals("self"));
     }
 
@@ -74,195 +93,153 @@ public final class Prefs {
         return s;
     }
 
-    // ---- genéricos
-    public int getInt(String k, int def) {
-        return sp.getInt(k, def);
-    }
+    // ── Genéricos ─────────────────────────────────────────────────────────────
+    public int getInt(String k, int def) { return sp.getInt(k, def); }
+    public void setInt(String k, int v)  { sp.edit().putInt(k, v).apply(); }
+    public boolean getBool(String k, boolean def) { return sp.getBoolean(k, def); }
+    public void setBool(String k, boolean v)      { sp.edit().putBoolean(k, v).apply(); }
 
-    public void setInt(String k, int v) {
-        sp.edit().putInt(k, v).apply();
-    }
+    // ── Aparência ─────────────────────────────────────────────────────────────
+    public int bgPercent()  { return clamp(sp.getInt("bg_pct",    60),   0,  100); }
+    public int textSp()     { return clamp(sp.getInt("text_sp",   10),   7,   18); }
+    public int radiusDp()   { return clamp(sp.getInt("radius_dp", 10),   0,   28); }
+    public int theme()      { return clamp(sp.getInt("theme",      0),   0, THEME_NAMES.length - 1); }
+    public boolean colorize()    { return sp.getBoolean("colorize", true); }
+    public boolean bold()        { return sp.getBoolean("bold", false); }
+    public boolean shadow()      { return sp.getBoolean("shadow", true); }
+    public boolean border()      { return sp.getBoolean("border", true); }
+    public boolean ghz()         { return sp.getBoolean("ghz", false); }
+    public boolean accentCustom(){ return sp.getBoolean("accent_on", false); }
 
-    public boolean getBool(String k, boolean def) {
-        return sp.getBoolean(k, def);
-    }
+    public void setTextSp(int v) { setInt("text_sp", clamp(v, 7, 18)); }
 
-    public void setBool(String k, boolean v) {
-        sp.edit().putBoolean(k, v).apply();
-    }
+    public int accentHue() { return clamp(sp.getInt("accent_hue", 210), 0, 360); }
 
-    // ---- aparência
-    public int bgPercent() {
-        return clamp(sp.getInt("bg_pct", 60), 0, 100);
-    }
-
-    public int textSp() {
-        return clamp(sp.getInt("text_sp", 10), 7, 18);
-    }
-
-    public void setTextSp(int v) {
-        setInt("text_sp", clamp(v, 7, 18));
-    }
-
-    public int radiusDp() {
-        return clamp(sp.getInt("radius_dp", 10), 0, 24);
-    }
-
-    public int theme() {
-        return clamp(sp.getInt("theme", 0), 0, THEME_NAMES.length - 1);
-    }
-
-    public boolean colorize() {
-        return sp.getBoolean("colorize", true);
-    }
-
-    public boolean bold() {
-        return sp.getBoolean("bold", false);
-    }
-
-    // ---- layout e estilo (v1.7)
-    /** 0 = lista vertical; 1 = barra horizontal (estilo GameHub). */
-    public int layout() {
-        return clamp(sp.getInt("layout", 0), 0, 1);
-    }
-
-    /** 0 = contínua com divisores; 1 = "chips" arredondados. */
-    public int barStyle() {
-        return clamp(sp.getInt("bar_style", 1), 0, 1);
-    }
-
-    /** 0 = esquerda, 1 = centro, 2 = direita (no topo da tela). */
-    public int anchor() {
-        return clamp(sp.getInt("anchor", 0), 0, 2);
-    }
-
-    public int barWidthPct() {
-        return clamp(sp.getInt("bar_width", 96), 40, 100);
-    }
-
-    public int padDp() {
-        return clamp(sp.getInt("pad_dp", 6), 0, 14);
-    }
-
-    public int textAlphaPct() {
-        return clamp(sp.getInt("text_alpha", 100), 30, 100);
-    }
-
-    /** 0 = monoespaçada, 1 = sans, 2 = condensada. */
-    public int font() {
-        return clamp(sp.getInt("font", 0), 0, 2);
-    }
-
-    public boolean shadow() {
-        return sp.getBoolean("shadow", true);
-    }
-
-    public boolean border() {
-        return sp.getBoolean("border", true);
-    }
-
-    public boolean ghz() {
-        return sp.getBoolean("ghz", false);
-    }
-
-    public boolean accentCustom() {
-        return sp.getBoolean("accent_on", false);
-    }
-
-    public int accentHue() {
-        return clamp(sp.getInt("accent_hue", 190), 0, 360);
-    }
-
-    /** Cor de destaque: a escolhida pelo matiz, ou a do tema. */
+    /** Cor de destaque: matiz personalizado ou a do tema. */
     public int accentColor() {
-        if (accentCustom()) return android.graphics.Color.HSVToColor(new float[]{accentHue(), 0.70f, 1.0f});
+        if (accentCustom()) return android.graphics.Color.HSVToColor(new float[]{accentHue(), 0.75f, 0.95f});
         int[] ac = THEME_ACCENT[theme()];
         return android.graphics.Color.rgb(ac[0], ac[1], ac[2]);
     }
 
-    // ---- guarda da GPU
-    public boolean guardOn() {
-        return sp.getBoolean("guard_on", true);
-    }
+    // ── Layout e estilo ───────────────────────────────────────────────────────
+    /** 0 = lista vertical; 1 = barra horizontal. */
+    public int layout()      { return clamp(sp.getInt("layout",    0), 0, 1); }
+    /** 0 = contínua com divisores; 1 = chips arredondados. */
+    public int barStyle()    { return clamp(sp.getInt("bar_style", 1), 0, 1); }
+    /** 0 = esquerda, 1 = centro, 2 = direita. */
+    public int anchor()      { return clamp(sp.getInt("anchor",    0), 0, 2); }
+    public int barWidthPct() { return clamp(sp.getInt("bar_width", 96), 40, 100); }
+    public int padDp()       { return clamp(sp.getInt("pad_dp",    6),  0, 16); }
+    public int textAlphaPct(){ return clamp(sp.getInt("text_alpha", 100), 30, 100); }
+    /** 0 = mono, 1 = sans, 2 = condensada. */
+    public int font()        { return clamp(sp.getInt("font",  0), 0, 2); }
 
-    /** Acima dessa temperatura da GPU o guarda NÃO age (a proteção do kernel precisa valer). */
-    public int guardTemp() {
-        return clamp(sp.getInt("guard_temp", 88), 70, 95);
-    }
+    // ── Novas opções de personalização ───────────────────────────────────────
 
-    public boolean gpuPin() {
-        return sp.getBoolean("gpu_pin", false);
-    }
+    /** Estilo visual do overlay: 0 padrão, 1 minimalista, 2 glassmorphism, 3 neon. */
+    public int overlayStyle() { return clamp(sp.getInt("overlay_style", 0), 0, 3); }
 
-    /** Perfis prontos de layout + métricas. 0 completo, 1 GameHub, 2 mínimo, 3 diagnóstico. */
+    /** Intensidade do brilho neon (só no estilo Neon). 0–100. */
+    public int neonGlow()     { return clamp(sp.getInt("neon_glow", 60), 0, 100); }
+
+    /** Tamanho do rótulo vs valor no overlay: 0 igual, 1 rótulo menor, 2 rótulo oculto. */
+    public int labelSize()    { return clamp(sp.getInt("label_size", 1), 0, 2); }
+
+    /** Exibir ícone emoji antes de cada métrica no overlay. */
+    public boolean showIcons() { return sp.getBoolean("show_icons", true); }
+
+    /** Mostrar barra de progresso mini abaixo do valor de CPU/GPU (só layout lista). */
+    public boolean showMiniBar() { return sp.getBoolean("show_mini_bar", false); }
+
+    /** Tempo (ms) de animação ao atualizar valores: 0 = sem animação. */
+    public int updateAnim()   { return clamp(sp.getInt("update_anim_ms", 120), 0, 400); }
+
+    /** Tocar vibração curta ao abrir o painel do overlay. */
+    public boolean hapticPanel() { return sp.getBoolean("haptic_panel", true); }
+
+    /** Temperatura mínima para alertar (°C). */
+    public int warnTempC()    { return clamp(sp.getInt("warn_temp_c", 70), 40, 90); }
+
+    /** Cor de fundo do painel rápido do overlay: 0 = tema, 1 = sempre escuro. */
+    public int panelBg()      { return clamp(sp.getInt("panel_bg", 0), 0, 1); }
+
+    // ── Guarda da GPU ─────────────────────────────────────────────────────────
+    public boolean guardOn()  { return sp.getBoolean("guard_on", true); }
+    public int guardTemp()    { return clamp(sp.getInt("guard_temp", 88), 70, 95); }
+    public boolean gpuPin()   { return sp.getBoolean("gpu_pin", false); }
+
+    // ── Perfis prontos ────────────────────────────────────────────────────────
+    /** 0 completo, 1 GameHub, 2 mínimo, 3 diagnóstico, 4 neon gaming. */
     public void applyPreset(int preset) {
         SharedPreferences.Editor e = sp.edit();
         for (String k : KEYS) e.putBoolean("m_" + k, false);
-        if (preset == 0) {
-            for (String k : KEYS) e.putBoolean("m_" + k, defaultFor(k));
-            e.putInt("layout", 0).putInt("anchor", 0).putInt("pos_x", 8).putInt("pos_y", 8);
-        } else if (preset == 1) {
-            for (String k : new String[]{"fps", "cpu", "cpufreq", "gpu", "gpustatus", "ram", "temp"}) e.putBoolean("m_" + k, true);
-            e.putInt("layout", 1).putInt("bar_style", 1).putInt("anchor", 1).putInt("pos_x", 0).putInt("pos_y", 4)
-                    .putInt("bar_width", 96).putInt("text_sp", 10).putInt("bg_pct", 55).putInt("radius_dp", 14);
-        } else if (preset == 2) {
-            for (String k : new String[]{"fps", "gpu", "gpustatus", "cpu", "ram"}) e.putBoolean("m_" + k, true);
-            e.putInt("layout", 1).putInt("bar_style", 1).putInt("anchor", 1).putInt("pos_x", 0).putInt("pos_y", 4)
-                    .putInt("bar_width", 96).putInt("text_sp", 10).putInt("bg_pct", 45).putInt("radius_dp", 14);
-        } else {
-            for (String k : KEYS) e.putBoolean("m_" + k, true);
-            e.putInt("layout", 0).putInt("anchor", 0).putInt("pos_x", 8).putInt("pos_y", 8);
+        switch (preset) {
+            case 0: // Completo
+                for (String k : KEYS) e.putBoolean("m_" + k, defaultFor(k));
+                e.putInt("layout", 0).putInt("anchor", 0).putInt("pos_x", 8).putInt("pos_y", 8)
+                        .putInt("overlay_style", 0).putInt("label_size", 1).putBoolean("show_icons", true);
+                break;
+            case 1: // GameHub
+                for (String k : new String[]{"fps", "cpu", "cpufreq", "gpu", "gpustatus", "ram", "temp"})
+                    e.putBoolean("m_" + k, true);
+                e.putInt("layout", 1).putInt("bar_style", 1).putInt("anchor", 1)
+                        .putInt("pos_x", 0).putInt("pos_y", 4)
+                        .putInt("bar_width", 96).putInt("text_sp", 10)
+                        .putInt("bg_pct", 55).putInt("radius_dp", 14)
+                        .putInt("overlay_style", 1).putInt("label_size", 1);
+                break;
+            case 2: // Mínimo
+                for (String k : new String[]{"fps", "gpu", "cpu", "ram"}) e.putBoolean("m_" + k, true);
+                e.putInt("layout", 1).putInt("bar_style", 1).putInt("anchor", 1)
+                        .putInt("pos_x", 0).putInt("pos_y", 4)
+                        .putInt("bar_width", 80).putInt("text_sp", 9)
+                        .putInt("bg_pct", 40).putInt("radius_dp", 16)
+                        .putInt("overlay_style", 1).putInt("label_size", 2)
+                        .putBoolean("show_icons", false);
+                break;
+            case 3: // Diagnóstico
+                for (String k : KEYS) e.putBoolean("m_" + k, true);
+                e.putInt("layout", 0).putInt("anchor", 0).putInt("pos_x", 8).putInt("pos_y", 8)
+                        .putInt("overlay_style", 0).putInt("label_size", 0).putBoolean("show_icons", false);
+                break;
+            case 4: // Neon Gaming
+                for (String k : new String[]{"fps", "cpu", "gpu", "gpustatus", "ram", "temp"})
+                    e.putBoolean("m_" + k, true);
+                e.putInt("layout", 1).putInt("bar_style", 1).putInt("anchor", 1)
+                        .putInt("pos_x", 0).putInt("pos_y", 4)
+                        .putInt("bar_width", 96).putInt("text_sp", 11)
+                        .putInt("bg_pct", 70).putInt("radius_dp", 12)
+                        .putInt("overlay_style", 3).putInt("neon_glow", 70)
+                        .putInt("label_size", 1).putBoolean("show_icons", true)
+                        .putInt("theme", 0).putBoolean("accent_on", false);
+                break;
         }
         e.apply();
     }
 
-    // ---- comportamento
-    public int intervalMs() {
-        return sp.getInt("interval_ms", 1000);
-    }
+    // ── Comportamento ─────────────────────────────────────────────────────────
+    public int intervalMs()  { return sp.getInt("interval_ms", 1000); }
+    public boolean lockPos()      { return sp.getBoolean("lock_pos",   false); }
+    public boolean clickThrough() { return sp.getBoolean("click_through", false); }
+    public boolean autostart()    { return sp.getBoolean("autostart", false); }
 
-    public boolean lockPos() {
-        return sp.getBoolean("lock_pos", false);
-    }
+    // ── Diagnóstico ───────────────────────────────────────────────────────────
+    public boolean diagOn()       { return sp.getBoolean("diag_on", true); }
+    public int diagIntervalSec()  { return clamp(sp.getInt("diag_sec", 15), 5, 300); }
 
-    public boolean clickThrough() {
-        return sp.getBoolean("click_through", false);
-    }
+    // ── Posição do overlay ────────────────────────────────────────────────────
+    public int posX() { return sp.getInt("pos_x", 8); }
+    public int posY() { return sp.getInt("pos_y", 8); }
+    public void setPos(int x, int y) { sp.edit().putInt("pos_x", x).putInt("pos_y", y).apply(); }
 
-    public boolean autostart() {
-        return sp.getBoolean("autostart", false);
-    }
-
-    // ---- diagnóstico automático (grava no log os mesmos valores que eu pedia pelo Termux)
-    public boolean diagOn() {
-        return sp.getBoolean("diag_on", true);
-    }
-
-    public int diagIntervalSec() {
-        return clamp(sp.getInt("diag_sec", 15), 5, 300);
-    }
-
-    public int posX() {
-        return sp.getInt("pos_x", 8);
-    }
-
-    public int posY() {
-        return sp.getInt("pos_y", 8);
-    }
-
-    public void setPos(int x, int y) {
-        sp.edit().putInt("pos_x", x).putInt("pos_y", y).apply();
-    }
-
+    // ── Listeners ─────────────────────────────────────────────────────────────
     public void registerListener(SharedPreferences.OnSharedPreferenceChangeListener l) {
         sp.registerOnSharedPreferenceChangeListener(l);
     }
-
     public void unregisterListener(SharedPreferences.OnSharedPreferenceChangeListener l) {
         sp.unregisterOnSharedPreferenceChangeListener(l);
     }
 
-    private static int clamp(int v, int lo, int hi) {
-        return Math.max(lo, Math.min(hi, v));
-    }
+    private static int clamp(int v, int lo, int hi) { return Math.max(lo, Math.min(hi, v)); }
 }

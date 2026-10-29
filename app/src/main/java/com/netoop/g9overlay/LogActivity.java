@@ -9,6 +9,7 @@ import android.graphics.Color;
 import android.graphics.Typeface;
 import android.os.Bundle;
 import android.util.TypedValue;
+import android.view.Gravity;
 import android.view.View;
 import android.widget.HorizontalScrollView;
 import android.widget.LinearLayout;
@@ -19,7 +20,7 @@ import android.widget.Toast;
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
 
-/** Mostra o log do app, com botões para atualizar, copiar, compartilhar, exportar (root) e limpar. */
+/** Tela de log — redesenhada para v1.8. */
 public class LogActivity extends Activity {
 
     private TextView tv;
@@ -29,94 +30,139 @@ public class LogActivity extends Activity {
     protected void onCreate(Bundle b) {
         super.onCreate(b);
         AppLog.init(this);
-        final int p = Ui.dp(this, 12);
+        getWindow().setStatusBarColor(Ui.BG);
+        getWindow().setNavigationBarColor(Ui.BG);
 
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setBackgroundColor(Ui.BG);
-        root.setPadding(p, p, p, p);
 
-        root.addView(Ui.text(this, "Log do app", 22, Ui.TEXT, true));
-        TextView path = Ui.text(this, AppLog.path(), 10, Ui.SUB, false);
-        path.setPadding(0, 0, 0, Ui.dp(this, 8));
-        root.addView(path);
+        // ── Cabeçalho ─────────────────────────────────────────────────────────
+        LinearLayout header = new LinearLayout(this);
+        header.setOrientation(LinearLayout.VERTICAL);
+        header.setBackgroundColor(Ui.BG);
+        int p = Ui.dp(this, 16);
+        header.setPadding(p, Ui.dp(this, 20), p, p);
 
-        LinearLayout row1 = new LinearLayout(this);
-        row1.setOrientation(LinearLayout.HORIZONTAL);
-        row1.addView(small("Atualizar", true, new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                refresh();
-            }
+        // Linha: título + botão voltar
+        LinearLayout titleRow = new LinearLayout(this);
+        titleRow.setOrientation(LinearLayout.HORIZONTAL);
+        titleRow.setGravity(Gravity.CENTER_VERTICAL);
+
+        LinearLayout titles = new LinearLayout(this);
+        titles.setOrientation(LinearLayout.VERTICAL);
+
+        TextView appName = Ui.text(this, "Log do app", 22, Ui.TEXT, true);
+        TextView pathTv  = Ui.text(this, AppLog.path(), 10, Ui.SUB, false);
+        pathTv.setPadding(0, Ui.dp(this, 2), 0, 0);
+        titles.addView(appName);
+        titles.addView(pathTv);
+        titleRow.addView(titles, new LinearLayout.LayoutParams(0,
+                LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+
+        android.widget.Button backBtn = new android.widget.Button(this);
+        backBtn.setText("← Voltar");
+        backBtn.setAllCaps(false);
+        backBtn.setTypeface(Typeface.DEFAULT_BOLD);
+        backBtn.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+        backBtn.setMinWidth(0); backBtn.setMinimumWidth(0);
+        backBtn.setStateListAnimator(null);
+        backBtn.setBackground(Ui.roundStroked(Ui.SURFACE2, Ui.BORDER, 20, 1, this));
+        backBtn.setTextColor(Ui.SUB);
+        int ph = Ui.dp(this, 14), pv = Ui.dp(this, 8);
+        backBtn.setPadding(ph, pv, ph, pv);
+        backBtn.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { finish(); }
+        });
+        LinearLayout.LayoutParams blp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        blp.setMargins(Ui.dp(this, 12), 0, 0, 0);
+        backBtn.setLayoutParams(blp);
+        titleRow.addView(backBtn);
+        header.addView(titleRow);
+
+        // Linha de botões de ação — 2 linhas de 3
+        LinearLayout actions1 = makeActionRow();
+        actions1.addView(small("↻ Atualizar", true, new View.OnClickListener() {
+            @Override public void onClick(View v) { refresh(); }
         }));
-        row1.addView(small("Copiar", false, new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                copy();
-            }
+        actions1.addView(small("⎘ Copiar", false, new View.OnClickListener() {
+            @Override public void onClick(View v) { copy(); }
         }));
-        row1.addView(small("Compartilhar", false, new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                share();
-            }
+        actions1.addView(small("⬆ Compartilhar", false, new View.OnClickListener() {
+            @Override public void onClick(View v) { share(); }
         }));
-        LinearLayout row2 = new LinearLayout(this);
-        row2.setOrientation(LinearLayout.HORIZONTAL);
-        row2.addView(small("Exportar (root)", false, new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                exportRoot();
-            }
+        LinearLayout actions2 = makeActionRow();
+        actions2.addView(small("↓ Exportar (root)", false, new View.OnClickListener() {
+            @Override public void onClick(View v) { exportRoot(); }
         }));
-        row2.addView(small("Limpar", false, new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
+        actions2.addView(small("🗑 Limpar", false, new View.OnClickListener() {
+            @Override public void onClick(View v) {
                 AppLog.clear();
                 AppLog.log("log", "log limpo");
                 refresh();
+                Toast.makeText(LogActivity.this, "Log limpo", Toast.LENGTH_SHORT).show();
             }
         }));
-        root.addView(row1);
-        root.addView(row2);
+        header.addView(actions1);
+        header.addView(actions2);
+        root.addView(header);
 
+        // Linha divisória
+        View line = new View(this);
+        line.setBackgroundColor(Ui.BORDER);
+        root.addView(line, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, Ui.dp(this, 1)));
+
+        // ── Área do log ───────────────────────────────────────────────────────
         sv = new ScrollView(this);
+        sv.setBackgroundColor(Color.rgb(10, 12, 16));
         tv = new TextView(this);
         tv.setTypeface(Typeface.MONOSPACE);
         tv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 9);
-        tv.setTextColor(Color.rgb(200, 210, 220));
+        tv.setTextColor(Color.rgb(180, 200, 220));
         tv.setTextIsSelectable(true);
+        int lp2 = Ui.dp(this, 12);
+        tv.setPadding(lp2, lp2, lp2, lp2);
+        tv.setLineSpacing(Ui.dp(this, 1), 1.0f);
         HorizontalScrollView hs = new HorizontalScrollView(this);
         hs.addView(tv);
         sv.addView(hs);
-        sv.setBackground(Ui.round(Color.rgb(10, 12, 16), 10, this));
-        sv.setPadding(Ui.dp(this, 8), Ui.dp(this, 8), Ui.dp(this, 8), Ui.dp(this, 8));
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+        LinearLayout.LayoutParams svLp = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f);
-        lp.setMargins(0, Ui.dp(this, 8), 0, 0);
-        root.addView(sv, lp);
+        root.addView(sv, svLp);
 
         setContentView(root);
         refresh();
     }
 
+    private LinearLayout makeActionRow() {
+        LinearLayout r = new LinearLayout(this);
+        r.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        lp.setMargins(Ui.dp(this, 16), Ui.dp(this, 6), Ui.dp(this, 16), 0);
+        r.setLayoutParams(lp);
+        return r;
+    }
+
     private android.widget.Button small(String label, boolean primary, View.OnClickListener l) {
         android.widget.Button bt = Ui.button(this, label, primary, l);
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0,
+                LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
         lp.setMargins(Ui.dp(this, 3), Ui.dp(this, 3), Ui.dp(this, 3), Ui.dp(this, 3));
         bt.setLayoutParams(lp);
         bt.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        bt.setMinHeight(Ui.dp(this, 40));
+        bt.setMinimumHeight(Ui.dp(this, 40));
         return bt;
     }
 
     private void refresh() {
         final String t = AppLog.tail(60000);
-        tv.setText(t);
+        tv.setText(t.isEmpty() ? "(log vazio)" : t);
         sv.post(new Runnable() {
-            @Override
-            public void run() {
-                sv.fullScroll(View.FOCUS_DOWN);
-            }
+            @Override public void run() { sv.fullScroll(View.FOCUS_DOWN); }
         });
     }
 
@@ -133,30 +179,30 @@ public class LogActivity extends Activity {
         startActivity(Intent.createChooser(i, "Compartilhar log"));
     }
 
-    /** Copia o arquivo de log para /sdcard/Download usando root (fácil de achar no gerenciador de arquivos). */
     private void exportRoot() {
         final String src = AppLog.path();
         new Thread(new Runnable() {
-            @Override
-            public void run() {
+            @Override public void run() {
                 String res;
                 try {
                     Process pr = new ProcessBuilder("su", "-c",
-                            "cp '" + src + "' /sdcard/Download/g9overlay-log.txt && chmod 666 /sdcard/Download/g9overlay-log.txt && echo OK")
+                            "cp '" + src + "' /sdcard/Download/g9overlay-log.txt "
+                                    + "&& chmod 666 /sdcard/Download/g9overlay-log.txt && echo OK")
                             .redirectErrorStream(true).start();
                     BufferedReader r = new BufferedReader(new InputStreamReader(pr.getInputStream()));
                     StringBuilder sb = new StringBuilder();
                     String l;
                     while ((l = r.readLine()) != null) sb.append(l);
                     pr.waitFor();
-                    res = sb.toString().contains("OK") ? "Exportado: Download/g9overlay-log.txt" : "Falhou: " + sb;
+                    res = sb.toString().contains("OK")
+                            ? "Exportado: Download/g9overlay-log.txt"
+                            : "Falhou: " + sb;
                 } catch (Exception e) {
                     res = "Erro: " + e.getMessage();
                 }
                 final String msg = res;
                 runOnUiThread(new Runnable() {
-                    @Override
-                    public void run() {
+                    @Override public void run() {
                         Toast.makeText(LogActivity.this, msg, Toast.LENGTH_LONG).show();
                     }
                 });
