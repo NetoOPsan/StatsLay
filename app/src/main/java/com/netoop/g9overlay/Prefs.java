@@ -224,6 +224,19 @@ public final class Prefs {
     public boolean clickThrough() { return sp.getBoolean("click_through", false); }
     public boolean autostart()    { return sp.getBoolean("autostart", false); }
 
+    /** Retorna se o overlay está fixado (posição travada E toque atravessa). */
+    public boolean isFixed() {
+        return lockPos() && clickThrough();
+    }
+
+    /** Define se o overlay deve ficar fixado no lugar com toque atravessando. */
+    public void setFixed(boolean fixed) {
+        sp.edit()
+                .putBoolean("lock_pos", fixed)
+                .putBoolean("click_through", fixed)
+                .apply();
+    }
+
     // ── Diagnóstico ───────────────────────────────────────────────────────────
     public boolean diagOn()       { return sp.getBoolean("diag_on", true); }
     public int diagIntervalSec()  { return clamp(sp.getInt("diag_sec", 15), 5, 300); }

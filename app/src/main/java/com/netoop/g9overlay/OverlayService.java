@@ -76,7 +76,7 @@ public class OverlayService extends Service {
     private WindowManager.LayoutParams lp;
     private FrameLayout root;
     private LinearLayout box;      // linhas de métricas
-    private LinearLayout panel;    // painel de configuração rápida
+    private View panel;            // painel de configuração rápida
     private final List<TextView> lineViews = new ArrayList<TextView>();
     private List<Collector.Line> lastLines = null;
     private List<Segs.Seg> lastSegs = null;
@@ -125,6 +125,7 @@ public class OverlayService extends Service {
                 @Override
                 public void onSharedPreferenceChanged(SharedPreferences sp, String key) {
                     applyStyle(); // aparência muda ao vivo, enquanto você mexe nos controles
+                    pokeTile();
                 }
             };
             prefs.registerListener(prefListener);
@@ -160,10 +161,11 @@ public class OverlayService extends Service {
         super.onDestroy();
     }
 
-    /** Pede ao painel de notificações para atualizar o tile do overlay (ativo/parado). */
+    /** Pede ao painel de notificações para atualizar os tiles do overlay. */
     private void pokeTile() {
         try {
             TileService.requestListeningState(this, new ComponentName(this, OverlayTile.class));
+            TileService.requestListeningState(this, new ComponentName(this, FixTile.class));
         } catch (Exception ignored) {
         }
     }
@@ -224,6 +226,10 @@ public class OverlayService extends Service {
 
             @Override
             public boolean onTouch(View v, MotionEvent e) {
+                // Quando o painel está aberto, permite que os toques e rolagens vão livremente para ele
+                if (panel != null && panel.getVisibility() == View.VISIBLE) {
+                    return false;
+                }
                 switch (e.getActionMasked()) {
                     case MotionEvent.ACTION_DOWN:
                         downX = e.getRawX();
@@ -287,6 +293,10 @@ public class OverlayService extends Service {
             changed = true;
         }
         boolean ct = prefs.clickThrough();
+        if (ct && panel != null && panel.getVisibility() == View.VISIBLE) {
+            panel.setVisibility(View.GONE);
+            box.setVisibility(View.VISIBLE);
+        }
         int f = BASE_FLAGS | (ct ? WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE : 0);
         if (lp.flags != f) {
             lp.flags = f;
@@ -301,8 +311,41 @@ public class OverlayService extends Service {
         renderAll();
     }
 
+    @Override
+    public void onConfigurationChanged(android.content.res.Configuration newConfig) {
+        super.onConfigurationChanged(newConfig);
+        // Se a tela girar (ex: de pé para deitada no jogo) e o painel estiver aberto,
+        // remonta o painel adaptado à nova orientação imediatamente!
+        if (panel != null && panel.getVisibility() == View.VISIBLE) {
+            root.removeView(panel);
+            panel = buildPanel();
+            panel.setVisibility(View.VISIBLE);
+            root.addView(panel);
+        }
+    }
+
+    /** ScrollView com altura máxima controlada para não estourar telas deitadas. */
+    private static class MaxHeightScrollView extends ScrollView {
+        private final int maxHeight;
+
+        public MaxHeightScrollView(android.content.Context context, int maxHeight) {
+            super(context);
+            this.maxHeight = maxHeight;
+            setVerticalScrollBarEnabled(true);
+            setOverScrollMode(OVER_SCROLL_IF_CONTENT_SCROLLS);
+        }
+
+        @Override
+        protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
+            if (maxHeight > 0) {
+                heightMeasureSpec = MeasureSpec.makeMeasureSpec(maxHeight, MeasureSpec.AT_MOST);
+            }
+            super.onMeasure(widthMeasureSpec, heightMeasureSpec);
+        }
+    }
+
     private void togglePanel() {
-        boolean show = panel.getVisibility() != View.VISIBLE;
+        boolean show = panel == null || panel.getVisibility() != View.VISIBLE;
         if (show && prefs.hapticPanel()) {
             try {
                 android.os.Vibrator vib = (android.os.Vibrator) getSystemService(VIBRATOR_SERVICE);
@@ -316,15 +359,29 @@ public class OverlayService extends Service {
                 }
             } catch (Exception ignored) {}
         }
-        panel.setVisibility(show ? View.VISIBLE : View.GONE);
-        box.setVisibility(show ? View.GONE : View.VISIBLE);
+        if (show) {
+            // Reconstrói o painel com as dimensões e orientação atuais da tela
+            if (panel != null) root.removeView(panel);
+            panel = buildPanel();
+            panel.setVisibility(View.VISIBLE);
+            root.addView(panel);
+            box.setVisibility(View.GONE);
+        } else {
+            if (panel != null) panel.setVisibility(View.GONE);
+            box.setVisibility(View.VISIBLE);
+        }
     }
 
-    private LinearLayout buildPanel() {
+    private View buildPanel() {
+        android.util.DisplayMetrics dm = getResources().getDisplayMetrics();
+        int screenW = dm.widthPixels;
+        int screenH = dm.heightPixels;
+        boolean isLandscape = screenW > screenH;
+
         int accent = prefs.accentColor();
         int panelBg = prefs.panelBg() == 1
-                ? Color.argb(230, 8, 10, 16)
-                : Color.argb(220,
+                ? Color.argb(245, 8, 10, 16)
+                : Color.argb(240,
                     Prefs.THEME_BG[prefs.theme()][0],
                     Prefs.THEME_BG[prefs.theme()][1],
                     Prefs.THEME_BG[prefs.theme()][2]);
@@ -334,49 +391,71 @@ public class OverlayService extends Service {
         GradientDrawable pbg = new GradientDrawable();
         pbg.setColor(panelBg);
         pbg.setCornerRadius(dp(16));
-        pbg.setStroke(dp(1), Color.argb(80,
+        pbg.setStroke(dp(1), Color.argb(90,
                 Color.red(accent), Color.green(accent), Color.blue(accent)));
         p.setBackground(pbg);
-        int pp = dp(12);
-        p.setPadding(pp, pp, pp, pp);
 
-        // ── Cabeçalho do painel ──
+        int pad = dp(12);
+        p.setPadding(pad, pad, pad, pad);
+
+        // Largura adaptada para landscape (2 colunas) ou portrait (1 coluna)
+        int targetWidth;
+        if (isLandscape) {
+            targetWidth = Math.min(dp(540), (int) (screenW * 0.90f));
+        } else {
+            targetWidth = Math.min(dp(330), (int) (screenW * 0.92f));
+        }
+        p.setLayoutParams(new FrameLayout.LayoutParams(targetWidth, FrameLayout.LayoutParams.WRAP_CONTENT));
+
+        // ── 1. CABEÇALHO FIXO (sempre visível, nunca rola para fora) ──
         LinearLayout header = new LinearLayout(this);
         header.setOrientation(LinearLayout.HORIZONTAL);
         header.setGravity(Gravity.CENTER_VERTICAL);
-        header.setPadding(0, 0, 0, dp(8));
+        header.setPadding(dp(2), 0, dp(2), dp(8));
 
         TextView title = new TextView(this);
-        title.setText("G9 Overlay");
+        title.setText("G9 Overlay · Ajustes");
         title.setTextColor(accent);
         title.setTypeface(Typeface.DEFAULT_BOLD);
         title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
-        title.setLetterSpacing(0.08f);
+        title.setLetterSpacing(0.06f);
         header.addView(title, new LinearLayout.LayoutParams(0,
                 LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
 
-        // Botão fechar (X) no canto
-        Button closeBtn = panelIconBtn("✕", accent, new View.OnClickListener() {
+        Button closeBtn = panelIconBtn("✕ Fechar", accent, new View.OnClickListener() {
             @Override public void onClick(View v) { togglePanel(); }
         });
         header.addView(closeBtn);
         p.addView(header);
 
-        // Divider
         View div0 = new View(this);
         div0.setBackgroundColor(Color.argb(50, 255, 255, 255));
         p.addView(div0, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, dp(1)));
 
-        // ── Métricas em grid compacto de 2 colunas ──
-        TextView metTitle = new TextView(this);
-        metTitle.setText("MÉTRICAS");
-        metTitle.setTextColor(Color.argb(140, Color.red(accent), Color.green(accent), Color.blue(accent)));
-        metTitle.setTypeface(Typeface.DEFAULT_BOLD);
-        metTitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 9);
-        metTitle.setLetterSpacing(0.12f);
-        metTitle.setPadding(0, dp(8), 0, dp(4));
-        p.addView(metTitle);
+        // ── 2. SCROLLVIEW COM ALTURA MÁXIMA CONTROLADA ──
+        // Garante que o painel nunca ultrapasse a tela deitada e nunca esmague os botões
+        int maxScrollH = Math.max(dp(160), screenH - dp(isLandscape ? 70 : 120));
+        MaxHeightScrollView sv = new MaxHeightScrollView(this, maxScrollH);
+        sv.setLayoutParams(new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+
+        LinearLayout scrollContent = new LinearLayout(this);
+        scrollContent.setOrientation(isLandscape ? LinearLayout.HORIZONTAL : LinearLayout.VERTICAL);
+        scrollContent.setPadding(0, dp(6), 0, dp(4));
+
+        // ── BLOCO 1: MÉTRICAS (HUD) ──
+        LinearLayout metricsCol = new LinearLayout(this);
+        metricsCol.setOrientation(LinearLayout.VERTICAL);
+        if (isLandscape) {
+            metricsCol.setLayoutParams(new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.15f));
+        } else {
+            metricsCol.setLayoutParams(new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+        }
+
+        TextView metTitle = sectionLabel("MÉTRICAS (HUD)", accent);
+        metricsCol.addView(metTitle);
 
         for (int i = 0; i < Prefs.KEYS.length; i += 2) {
             LinearLayout row = new LinearLayout(this);
@@ -385,78 +464,142 @@ public class OverlayService extends Service {
                 final String key = Prefs.KEYS[j];
                 CheckBox cb = new CheckBox(this);
                 cb.setText(Prefs.LABELS[j]);
-                cb.setTextColor(Color.rgb(200, 210, 225));
+                cb.setTextColor(Color.rgb(215, 225, 238));
                 cb.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
                 cb.setChecked(prefs.on(key));
-                cb.setPadding(0, dp(1), dp(6), dp(1));
+                cb.setPadding(0, dp(2), dp(4), dp(2));
                 cb.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
                     @Override
                     public void onCheckedChanged(CompoundButton b, boolean checked) {
                         prefs.set(key, checked);
                     }
                 });
-                row.addView(cb, new LinearLayout.LayoutParams(dp(148), LinearLayout.LayoutParams.WRAP_CONTENT));
+                row.addView(cb, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
             }
-            p.addView(row);
+            metricsCol.addView(row);
+        }
+        scrollContent.addView(metricsCol);
+
+        // Divisor vertical se for landscape, ou horizontal se portrait
+        if (isLandscape) {
+            View vDiv = new View(this);
+            vDiv.setBackgroundColor(Color.argb(40, 255, 255, 255));
+            LinearLayout.LayoutParams vdlp = new LinearLayout.LayoutParams(dp(1), LinearLayout.LayoutParams.MATCH_PARENT);
+            vdlp.setMargins(dp(10), dp(4), dp(10), dp(4));
+            scrollContent.addView(vDiv, vdlp);
+        } else {
+            View hDiv1 = new View(this);
+            hDiv1.setBackgroundColor(Color.argb(50, 255, 255, 255));
+            LinearLayout.LayoutParams hd1lp = new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT, dp(1));
+            hd1lp.setMargins(0, dp(8), 0, dp(8));
+            scrollContent.addView(hDiv1, hd1lp);
         }
 
-        // ── Controles de aparência rápidos ──
-        View div1 = new View(this);
-        div1.setBackgroundColor(Color.argb(50, 255, 255, 255));
-        LinearLayout.LayoutParams d1lp = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, dp(1));
-        d1lp.setMargins(0, dp(8), 0, dp(8));
-        p.addView(div1, d1lp);
+        // ── BLOCO 2: APARÊNCIA & AÇÕES ──
+        LinearLayout actionsCol = new LinearLayout(this);
+        actionsCol.setOrientation(LinearLayout.VERTICAL);
+        if (isLandscape) {
+            actionsCol.setLayoutParams(new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.0f));
+        } else {
+            actionsCol.setLayoutParams(new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+        }
 
-        TextView quickTitle = new TextView(this);
-        quickTitle.setText("APARÊNCIA RÁPIDA");
-        quickTitle.setTextColor(Color.argb(140, Color.red(accent), Color.green(accent), Color.blue(accent)));
-        quickTitle.setTypeface(Typeface.DEFAULT_BOLD);
-        quickTitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 9);
-        quickTitle.setLetterSpacing(0.12f);
-        quickTitle.setPadding(0, 0, 0, dp(4));
-        p.addView(quickTitle);
+        TextView quickTitle = sectionLabel("APARÊNCIA RÁPIDA", accent);
+        actionsCol.addView(quickTitle);
 
-        LinearLayout b1 = new LinearLayout(this);
-        b1.setOrientation(LinearLayout.HORIZONTAL);
-        LinearLayout.LayoutParams b1lp = new LinearLayout.LayoutParams(
+        // Linha Tamanho do Texto: [ − ]  Texto: 10 sp  [ + ]
+        LinearLayout txtRow = new LinearLayout(this);
+        txtRow.setOrientation(LinearLayout.HORIZONTAL);
+        txtRow.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout.LayoutParams trlp = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-        b1lp.setMargins(0, 0, 0, dp(4));
-        b1.setLayoutParams(b1lp);
+        trlp.setMargins(0, 0, 0, dp(6));
+        txtRow.setLayoutParams(trlp);
 
-        b1.addView(panelChipBtn("A−", accent, new View.OnClickListener() {
-            @Override public void onClick(View v) { prefs.setTextSp(prefs.textSp() - 1); }
-        }));
-        b1.addView(panelChipBtn("A+", accent, new View.OnClickListener() {
-            @Override public void onClick(View v) { prefs.setTextSp(prefs.textSp() + 1); }
-        }));
-        b1.addView(panelChipBtn("Fundo−", accent, new View.OnClickListener() {
-            @Override public void onClick(View v) {
-                prefs.setInt("bg_pct", Math.max(0, prefs.bgPercent() - 10));
-            }
-        }));
-        b1.addView(panelChipBtn("Fundo+", accent, new View.OnClickListener() {
-            @Override public void onClick(View v) {
-                prefs.setInt("bg_pct", Math.min(100, prefs.bgPercent() + 10));
-            }
-        }));
-        p.addView(b1);
+        final TextView txtVal = new TextView(this);
+        txtVal.setText("Texto: " + prefs.textSp() + " sp");
+        txtVal.setTextColor(Color.rgb(230, 235, 245));
+        txtVal.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        txtVal.setTypeface(Typeface.DEFAULT_BOLD);
+        txtVal.setGravity(Gravity.CENTER);
 
-        // ── Ações GPU ──
-        View div2 = new View(this);
-        div2.setBackgroundColor(Color.argb(50, 255, 255, 255));
-        LinearLayout.LayoutParams d2lp = new LinearLayout.LayoutParams(
+        Button txtMinus = panelStepperBtn("−", accent, new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                int nv = Math.max(7, prefs.textSp() - 1);
+                prefs.setTextSp(nv);
+                txtVal.setText("Texto: " + nv + " sp");
+            }
+        });
+        Button txtPlus = panelStepperBtn("+", accent, new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                int nv = Math.min(18, prefs.textSp() + 1);
+                prefs.setTextSp(nv);
+                txtVal.setText("Texto: " + nv + " sp");
+            }
+        });
+        txtRow.addView(txtMinus);
+        txtRow.addView(txtVal, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        txtRow.addView(txtPlus);
+        actionsCol.addView(txtRow);
+
+        // Linha Opacidade do Fundo: [ − ]  Fundo: 60%  [ + ]
+        LinearLayout bgRow = new LinearLayout(this);
+        bgRow.setOrientation(LinearLayout.HORIZONTAL);
+        bgRow.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout.LayoutParams brlp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        brlp.setMargins(0, 0, 0, dp(8));
+        bgRow.setLayoutParams(brlp);
+
+        final TextView bgVal = new TextView(this);
+        bgVal.setText("Fundo: " + prefs.bgPercent() + "%");
+        bgVal.setTextColor(Color.rgb(230, 235, 245));
+        bgVal.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        bgVal.setTypeface(Typeface.DEFAULT_BOLD);
+        bgVal.setGravity(Gravity.CENTER);
+
+        Button bgMinus = panelStepperBtn("−", accent, new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                int nv = Math.max(0, prefs.bgPercent() - 10);
+                prefs.setInt("bg_pct", nv);
+                bgVal.setText("Fundo: " + nv + "%");
+            }
+        });
+        Button bgPlus = panelStepperBtn("+", accent, new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                int nv = Math.min(100, prefs.bgPercent() + 10);
+                prefs.setInt("bg_pct", nv);
+                bgVal.setText("Fundo: " + nv + "%");
+            }
+        });
+        bgRow.addView(bgMinus);
+        bgRow.addView(bgVal, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        bgRow.addView(bgPlus);
+        actionsCol.addView(bgRow);
+
+        // Divisor antes de GPU
+        View divGpu = new View(this);
+        divGpu.setBackgroundColor(Color.argb(40, 255, 255, 255));
+        LinearLayout.LayoutParams dglp = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, dp(1));
-        d2lp.setMargins(0, dp(4), 0, dp(8));
-        p.addView(div2, d2lp);
+        dglp.setMargins(0, dp(2), 0, dp(6));
+        actionsCol.addView(divGpu, dglp);
 
+        // Rótulo GPU
+        TextView gpuTitle = sectionLabel("AÇÕES DA GPU", accent);
+        actionsCol.addView(gpuTitle);
+
+        // Botões de GPU: Gravar GPU e Destravar GPU
         LinearLayout gpuRow = new LinearLayout(this);
         gpuRow.setOrientation(LinearLayout.HORIZONTAL);
-        LinearLayout.LayoutParams glp = new LinearLayout.LayoutParams(
+        LinearLayout.LayoutParams grlp = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-        glp.setMargins(0, 0, 0, dp(4));
-        gpuRow.setLayoutParams(glp);
-        gpuRow.addView(panelChipBtn("Gravar GPU", accent, new View.OnClickListener() {
+        grlp.setMargins(0, 0, 0, dp(8));
+        gpuRow.setLayoutParams(grlp);
+
+        gpuRow.addView(panelActionBtn("Gravar GPU", accent, new View.OnClickListener() {
             @Override public void onClick(View v) {
                 GpuTools.record(OverlayService.this, "painel do overlay", new GpuTools.Callback() {
                     @Override public void onResult(final String summary) {
@@ -469,7 +612,7 @@ public class OverlayService extends Service {
                 });
             }
         }));
-        gpuRow.addView(panelChipBtn("Destravar GPU", accent, new View.OnClickListener() {
+        gpuRow.addView(panelActionBtn("Destravar GPU", accent, new View.OnClickListener() {
             @Override public void onClick(View v) {
                 Toast.makeText(OverlayService.this, "Tentando soltar a GPU...", Toast.LENGTH_SHORT).show();
                 GpuTools.unstick(OverlayService.this, new GpuTools.Callback() {
@@ -483,38 +626,89 @@ public class OverlayService extends Service {
                 });
             }
         }));
-        p.addView(gpuRow);
+        actionsCol.addView(gpuRow);
 
-        // ── Navegação: Config / Parar ──
+        // Divisor antes de Navegação
+        View divNav = new View(this);
+        divNav.setBackgroundColor(Color.argb(40, 255, 255, 255));
+        LinearLayout.LayoutParams dnlp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(1));
+        dnlp.setMargins(0, dp(2), 0, dp(6));
+        actionsCol.addView(divNav, dnlp);
+
+        // Botões de Navegação: Configurações e Parar Overlay
         LinearLayout navRow = new LinearLayout(this);
         navRow.setOrientation(LinearLayout.HORIZONTAL);
-        navRow.addView(panelChipBtn("⚙ Config.", accent, new View.OnClickListener() {
+        LinearLayout.LayoutParams nrlp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        navRow.setLayoutParams(nrlp);
+
+        navRow.addView(panelActionBtn("⚙ Config.", accent, new View.OnClickListener() {
             @Override public void onClick(View v) {
                 Intent i = new Intent(OverlayService.this, MainActivity.class);
                 i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
                 startActivity(i);
             }
         }));
-        navRow.addView(panelChipBtn("⏹ Parar overlay", Color.rgb(252, 100, 100), new View.OnClickListener() {
+        navRow.addView(panelDangerBtn("⏹ Parar", new View.OnClickListener() {
             @Override public void onClick(View v) {
                 AppLog.log("svc", "parar (painel)");
                 stopSelf();
             }
         }));
-        p.addView(navRow);
+        actionsCol.addView(navRow);
+
+        scrollContent.addView(actionsCol);
+        sv.addView(scrollContent);
+        p.addView(sv);
 
         return p;
     }
 
-    /** Botão chip para o painel do overlay (estilo discreto com a cor de destaque). */
-    private Button panelChipBtn(String label, int accent, View.OnClickListener l) {
+    private TextView sectionLabel(String text, int accent) {
+        TextView tv = new TextView(this);
+        tv.setText(text);
+        tv.setTextColor(Color.argb(160, Color.red(accent), Color.green(accent), Color.blue(accent)));
+        tv.setTypeface(Typeface.DEFAULT_BOLD);
+        tv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10);
+        tv.setLetterSpacing(0.10f);
+        tv.setPadding(0, dp(4), 0, dp(4));
+        return tv;
+    }
+
+    /** Botão stepper quadrado para − / + com clique fácil. */
+    private Button panelStepperBtn(String label, int accent, View.OnClickListener l) {
         Button b = new Button(this);
         b.setText(label);
         b.setAllCaps(false);
         b.setTypeface(Typeface.DEFAULT_BOLD);
-        b.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
+        b.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
         b.setMinWidth(0); b.setMinimumWidth(0);
-        b.setMinHeight(dp(34)); b.setMinimumHeight(dp(34));
+        b.setMinHeight(dp(36)); b.setMinimumHeight(dp(36));
+        b.setStateListAnimator(null);
+        int bg = Color.argb(45, Color.red(accent), Color.green(accent), Color.blue(accent));
+        int stroke = Color.argb(90, Color.red(accent), Color.green(accent), Color.blue(accent));
+        GradientDrawable gd = new GradientDrawable();
+        gd.setColor(bg);
+        gd.setCornerRadius(dp(10));
+        gd.setStroke(dp(1), stroke);
+        b.setBackground(gd);
+        b.setTextColor(accent);
+        b.setOnClickListener(l);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(44), dp(36));
+        b.setLayoutParams(lp);
+        return b;
+    }
+
+    /** Botão de ação (ex.: Gravar GPU, Destravar GPU, Config) com altura e largura garantidas. */
+    private Button panelActionBtn(String label, int accent, View.OnClickListener l) {
+        Button b = new Button(this);
+        b.setText(label);
+        b.setAllCaps(false);
+        b.setTypeface(Typeface.DEFAULT_BOLD);
+        b.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        b.setMinWidth(0); b.setMinimumWidth(0);
+        b.setMinHeight(dp(38)); b.setMinimumHeight(dp(38));
         b.setStateListAnimator(null);
         int bg = Color.argb(35, Color.red(accent), Color.green(accent), Color.blue(accent));
         int stroke = Color.argb(70, Color.red(accent), Color.green(accent), Color.blue(accent));
@@ -524,11 +718,39 @@ public class OverlayService extends Service {
         gd.setStroke(dp(1), stroke);
         b.setBackground(gd);
         b.setTextColor(accent);
-        b.setPadding(dp(10), dp(4), dp(10), dp(4));
+        b.setPadding(dp(8), dp(4), dp(8), dp(4));
         b.setOnClickListener(l);
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0,
                 LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
-        lp.setMargins(dp(2), dp(2), dp(2), dp(2));
+        lp.setMargins(dp(3), dp(2), dp(3), dp(2));
+        b.setLayoutParams(lp);
+        return b;
+    }
+
+    /** Botão de alerta / perigo (ex.: Parar). */
+    private Button panelDangerBtn(String label, View.OnClickListener l) {
+        Button b = new Button(this);
+        b.setText(label);
+        b.setAllCaps(false);
+        b.setTypeface(Typeface.DEFAULT_BOLD);
+        b.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        b.setMinWidth(0); b.setMinimumWidth(0);
+        b.setMinHeight(dp(38)); b.setMinimumHeight(dp(38));
+        b.setStateListAnimator(null);
+        int red = Color.rgb(252, 100, 100);
+        int bg = Color.argb(40, 252, 100, 100);
+        int stroke = Color.argb(90, 252, 100, 100);
+        GradientDrawable gd = new GradientDrawable();
+        gd.setColor(bg);
+        gd.setCornerRadius(dp(10));
+        gd.setStroke(dp(1), stroke);
+        b.setBackground(gd);
+        b.setTextColor(red);
+        b.setPadding(dp(8), dp(4), dp(8), dp(4));
+        b.setOnClickListener(l);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0,
+                LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
+        lp.setMargins(dp(3), dp(2), dp(3), dp(2));
         b.setLayoutParams(lp);
         return b;
     }
@@ -539,23 +761,23 @@ public class OverlayService extends Service {
         b.setText(label);
         b.setAllCaps(false);
         b.setTypeface(Typeface.DEFAULT_BOLD);
-        b.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+        b.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
         b.setMinWidth(0); b.setMinimumWidth(0);
         b.setMinHeight(dp(32)); b.setMinimumHeight(dp(32));
         b.setStateListAnimator(null);
         GradientDrawable gd = new GradientDrawable();
-        gd.setColor(Color.argb(30, Color.red(accent), Color.green(accent), Color.blue(accent)));
+        gd.setColor(Color.argb(35, Color.red(accent), Color.green(accent), Color.blue(accent)));
         gd.setCornerRadius(dp(12));
         b.setBackground(gd);
-        b.setTextColor(Color.argb(180, Color.red(accent), Color.green(accent), Color.blue(accent)));
-        int pp = dp(10);
+        b.setTextColor(accent);
+        int pp = dp(12);
         b.setPadding(pp, dp(4), pp, dp(4));
         b.setOnClickListener(l);
         return b;
     }
 
     private Button smallButton(String label, View.OnClickListener l) {
-        return panelChipBtn(label, prefs.accentColor(), l);
+        return panelActionBtn(label, prefs.accentColor(), l);
     }
 
     // ------------------------------------------------------------ threads

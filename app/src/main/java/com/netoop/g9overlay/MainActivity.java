@@ -392,6 +392,7 @@ public class MainActivity extends Activity {
         tileCard.addView(Ui.sectionTitle(this, "Atalhos no painel de notificações", accent));
         String[] tileItems = {
                 "● Overlay — liga/desliga o HUD",
+                "● Fixar Overlay — trava posição e toque atravessa",
                 "● Performance — módulo GPU+CPU",
                 "● Limpar RAM — libera memória antes de jogar",
                 "● Gravar GPU — snapshot no log",
