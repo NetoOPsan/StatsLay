@@ -38,6 +38,7 @@ import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.widget.Toast;
+import android.widget.ScrollView;
 
 import java.io.BufferedReader;
 import java.io.FileReader;
